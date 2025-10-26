@@ -79,6 +79,7 @@ async def analyze_blood_smear(file: UploadFile = File(...)):
 
 
 if __name__ == "__main__":
-    # Runs the server on port 8000, accessible from anywhere
-    print("Starting API server on http://0.0.0.0:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Get port from environment, default to 8000 for local
+    port = int(os.environ.get("PORT", 8000)) 
+    print(f"Starting API server on http://0.0.0.0:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)

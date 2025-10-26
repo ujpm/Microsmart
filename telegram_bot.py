@@ -18,9 +18,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_URL = os.getenv("API_URL")
 
 # --- URL & Text Configuration ---
-# !! Change this to your project's website or GitHub repo
-LEARN_MORE_URL = "https://github.com/your-username/Microsmart" 
-CONTRIBUTE_URL = "https://github.com/your-username/Microsmart"
+
+LEARN_MORE_URL = "https://portifolio-cgu.pages.dev/"
+CONTRIBUTE_URL = "https://github.com/ujpm/"
 
 # Check if the variables are loaded
 if not TELEGRAM_TOKEN:
@@ -39,25 +39,25 @@ Hello! Welcome to **MicroSmart** 🔬
 
 I'm your AI-powered microscopy sidekick, here to give you **lightning-fast preliminary analysis** of those *pesky* microscopic samples.
 
----
+
 **🚧 Status: v1.0 "The Blood Analyst"**
----
+
 I've mastered blood smears (for now)! Upload a clear photo and I'll:
 * Count Red Blood Cells, White Blood Cells & Platelets.
 * Flag anything that looks suspicious (like high/low counts).
 * *Try* not to judge your microscope photography skills. 😉
 
----
+
 **🔮 The Grand Vision**
----
+
 My training never stops! Soon I'll be learning to tackle:
 * **Stool samples** (parasite egg hunt 🪱)
 * **Urine sediment** (the great crystal hunt 💎)
 * **Gram stains** (bacterial party identification 🦠)
 
----
+
 **🤝 Join the Revolution!**
----
+
 This is an open-source mission to make lab work less tedious. We're actively looking for collaborators.
 
 Ready to put me to work? Choose an option below!
