@@ -5,3 +5,4 @@ opencv-python-headless
 python-multipart 
 requests 
 python-telegram-bot
+python-dotenv
