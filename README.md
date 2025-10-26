@@ -111,4 +111,4 @@ This project is set up to run in GitHub Codespaces. The instructions are almost 
 * **Phase 3: Urine Sample Analysis**
     * Train a new model for urine sediment (crystals, casts, cells).
     * Add a new `/analyze/urine` endpoint to the API.
-    * Add a `/urine` command to the bot.
+    * Add a `/urine` command to the bot.  

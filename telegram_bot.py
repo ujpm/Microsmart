@@ -1,41 +1,140 @@
 import requests
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import io
-import os  # <-- Import the 'os' module
-from dotenv import load_dotenv  # <-- Import 'load_dotenv'
+import os
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup  # <-- NEW
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    CallbackQueryHandler  # <-- NEW
+)
 
-# Load variables from your .env file into the environment
+# Load variables from your .env file
 load_dotenv()
-
-# --- CONFIGURATION ---
-# 1. Securely get the token from the environment
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-# 2. Securely get the API URL from the environment
 API_URL = os.getenv("API_URL")
+
+# --- URL & Text Configuration ---
+# !! Change this to your project's website or GitHub repo
+LEARN_MORE_URL = "https://github.com/your-username/Microsmart" 
+CONTRIBUTE_URL = "https://github.com/your-username/Microsmart"
 
 # Check if the variables are loaded
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN not found! Check your .env file.")
 if not API_URL:
     raise ValueError("API_URL not found! Check your .env file.")
-# ---------------------
 
-
+# --- NEW: /start command handler ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /start command."""
+    """Handles the /start command with the new welcome message and buttons."""
+    
+    welcome_text = """
+Hello! Welcome to **MicroSmart** 🔬
+
+(This project was started by a frustrated lab tech... just saying.)
+
+I'm your AI-powered microscopy sidekick, here to give you **lightning-fast preliminary analysis** of those *pesky* microscopic samples.
+
+---
+**🚧 Status: v1.0 "The Blood Analyst"**
+---
+I've mastered blood smears (for now)! Upload a clear photo and I'll:
+* Count Red Blood Cells, White Blood Cells & Platelets.
+* Flag anything that looks suspicious (like high/low counts).
+* *Try* not to judge your microscope photography skills. 😉
+
+---
+**🔮 The Grand Vision**
+---
+My training never stops! Soon I'll be learning to tackle:
+* **Stool samples** (parasite egg hunt 🪱)
+* **Urine sediment** (the great crystal hunt 💎)
+* **Gram stains** (bacterial party identification 🦠)
+
+---
+**🤝 Join the Revolution!**
+---
+This is an open-source mission to make lab work less tedious. We're actively looking for collaborators.
+
+Ready to put me to work? Choose an option below!
+"""
+
+    # Define the inline buttons
+    keyboard = [
+        [InlineKeyboardButton("Learn More 🌐", url=LEARN_MORE_URL)],
+        [InlineKeyboardButton("Developer 👨‍💻", callback_data="developer_info")],
+        [InlineKeyboardButton("Try It Now 🚀", callback_data="try_now")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    # Send the message
     await update.message.reply_text(
-        "Hello! I am the MicroSmart AI assistant. 🔬\n\n"
-        "Send me a picture of a blood smear, and I will analyze it for you."
+        welcome_text,
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
     )
 
+# --- NEW: /analyze command handler ---
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /analyze command from the menu."""
+    await update.message.reply_text(
+        "Ready! Please send me a clear, close-up photo of a blood smear."
+    )
+
+# --- NEW: /help command handler ---
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /help command."""
+    await update.message.reply_text(
+        "I am MicroSmart v1.0, an AI assistant.\n\n"
+        "I can analyze blood smear photos. Use the /analyze command or the 'Try It Now' "
+        "button and send me an image. For more info, use /start."
+    )
+
+# --- NEW: /feedback command handler ---
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /feedback command."""
+    await update.message.reply_text(
+        "We'd love your feedback! To send it, please type:\n"
+        "/feedback *followed by your message*.\n\n"
+        "Example: `/feedback This bot is amazing!`"
+    )
+
+# --- NEW: /contribute command handler ---
+async def contribute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /contribute command."""
+    await update.message.reply_text(
+        f"You can contribute to this project on GitHub:\n{CONTRIBUTE_URL}\n\n"
+        "We are also actively looking for data partners! "
+        "Please contact the developer at (your-email@example.com) to partner."
+    )
+
+# --- NEW: Button Click Handler ---
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles all button clicks from inline keyboards."""
+    query = update.callback_query
+    await query.answer()  # Acknowledge the button click
+
+    if query.data == "developer_info":
+        await query.message.reply_text(
+            f"MicroSmart is an open-source project. You can follow its development "
+            f"or contribute on GitHub:\n{CONTRIBUTE_URL}"
+        )
+    elif query.data == "try_now":
+        await query.message.reply_text(
+            "Great! Please send me a clear, close-up photo of a blood smear."
+        )
+
+
+# --- Image Handler (Unchanged, but with better comments) ---
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles when a user sends a photo."""
+    """Handles when a user sends a photo for analysis."""
     
-    # Let the user know you've received the image
     await update.message.reply_text("Processing your image, please wait... ⏳")
     
-    # 1. Get the photo file from Telegram (we take the highest resolution)
     try:
         photo_file = await update.message.photo[-1].get_file()
     except Exception as e:
@@ -43,31 +142,26 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, I had trouble downloading your image. Please try again.")
         return
 
-    # 2. Download the photo as a byte stream in memory
     file_bytes_io = io.BytesIO()
     await photo_file.download_to_memory(file_bytes_io)
-    file_bytes_io.seek(0) # Go to the beginning of the stream
+    file_bytes_io.seek(0)
     
-    # 3. Prepare the file to send to the API
-    #    The API is expecting a file named 'file'
     files_to_send = {'file': ('user_image.jpg', file_bytes_io, 'image/jpeg')}
     
     try:
-        # 4. Send the file to your API and set a timeout
-        response = requests.post(API_URL, files=files_to_send, timeout=60) # 60 sec timeout
+        response = requests.post(API_URL, files=files_to_send, timeout=60)
         
         if response.status_code == 200:
-            # 5. Format the JSON data from the API into a nice report
             data = response.json()
             counts = data.get('counts', {})
             flags = data.get('flags', [])
             
-            # Use Markdown for formatting
+            # This is the "basic" report we will polish next (Level 2)
             report = "🔬 *Analysis Report* 🔬\n\n"
             report += "*Cell Counts:*\n"
             report += f"  - Red Blood Cells: *{counts.get('RBC', 0)}*\n"
             report += f"  - White Blood Cells: *{counts.get('WBC', 0)}*\n"
-            report += f"  - Platelets: *...*\n\n" # Removed specific count for privacy/simplicity
+            report += f"  - Platelets: *{counts.get('Platelet', 0)}*\n\n" # Updated to new name
             
             if flags:
                 report += "⚠️ *Potential Flags:*\n"
@@ -79,28 +173,37 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(report, parse_mode="Markdown")
             
         else:
-            # Handle errors from the API server
             await update.message.reply_text(f"Sorry, the analysis server returned an error (Code: {response.status_code}). Please try again.")
 
     except requests.exceptions.Timeout:
-        await update.message.reply_text("The analysis is taking too long and timed out. Please try again with a clearer or smaller image.")
+        await update.message.reply_text("The analysis is taking too long. Please try again.")
     except requests.exceptions.RequestException as e:
-        # Handle network errors
         print(f"Error connecting to API: {e}")
         await update.message.reply_text("Error: Could not connect to the analysis server. Please tell the admin.")
+
 
 def main():
     """Starts the bot."""
     print("Bot is starting...")
     
-    # Create the Application
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Add handlers
+    # --- UPDATED: Add all new handlers ---
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_image)) # Listens for photos
+    app.add_handler(CommandHandler("analyze", analyze_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("feedback", feedback_command))
+    app.add_handler(CommandHandler("contribute", contribute_command))
+    
+    app.add_handler(CallbackQueryHandler(button_handler)) # Handles button clicks
+    app.add_handler(MessageHandler(filters.PHOTO, handle_image)) # Handles photos
 
-    # Start the bot
+    # Error handler (optional but good)
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        print(f"Update {update} caused error {context.error}")
+    
+    app.add_error_handler(error_handler)
+    
     print("Bot is polling for messages...")
     app.run_polling()
 
