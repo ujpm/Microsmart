@@ -2,15 +2,23 @@ import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import io
+import os  # <-- Import the 'os' module
+from dotenv import load_dotenv  # <-- Import 'load_dotenv'
+
+# Load variables from your .env file into the environment
+load_dotenv()
 
 # --- CONFIGURATION ---
-# 1. Paste your bot's TOKEN here
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_TOKEN_HERE" 
+# 1. Securely get the token from the environment
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# 2. Securely get the API URL from the environment
+API_URL = os.getenv("API_URL")
 
-# 2. Paste your Codespace API URL here. 
-#    (It's the one that showed '{"status":"MicroSmart API is running!"}')
-#    Make sure it ends with '/analyze/blood'
-API_URL = "https://infamous-hobgoblin-jx9vgvvrjv52qrwx-8000.app.github.dev/analyze/blood"
+# Check if the variables are loaded
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN not found! Check your .env file.")
+if not API_URL:
+    raise ValueError("API_URL not found! Check your .env file.")
 # ---------------------
 
 
@@ -59,7 +67,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += "*Cell Counts:*\n"
             report += f"  - Red Blood Cells: *{counts.get('RBC', 0)}*\n"
             report += f"  - White Blood Cells: *{counts.get('WBC', 0)}*\n"
-            report += f"  - Platelets: *{counts.get('Platelet', 0)}*\n\n"
+            report += f"  - Platelets: *...*\n\n" # Removed specific count for privacy/simplicity
             
             if flags:
                 report += "⚠️ *Potential Flags:*\n"
