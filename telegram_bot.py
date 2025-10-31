@@ -1,9 +1,6 @@
 import httpx
 import io
 import os
-import cv2
-import requests
-import numpy as np
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -41,18 +38,40 @@ client = httpx.AsyncClient()
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /start command."""
+    """
+    Handles the /start command with the new welcome message and buttons.
+    This will also cancel any ongoing analysis.
+    """
+    # --- NEW: Polished Welcome Text ---
     welcome_text = """
 Hello! Welcome to **MicroSmart** 🔬
 
 I'm your AI-powered microscopy sidekick, here to give you **lightning-fast preliminary analysis** of those *pesky* microscopic samples.
+
+**🚧 Status: v1.0 "The Blood Analyst"**
+
+I've mastered blood smears (for now)! I can:
+* Count Red Blood Cells, White Blood Cells & Platelets.
+* Flag anything that looks suspicious (like high/low counts).
+* Give you an **estimated concentration** (e.g., `4.5 x 10⁹/L`) based on your images.
+
+**🔮 The Grand Vision**
+
+My training never stops! Soon I'll be learning to tackle:
+* **Stool samples** (parasite egg hunt 🪱)
+* **Urine sediment** (the great crystal hunt 💎)
+* **Gram stains** (bacterial party identification 🦠)
+
+**🤝 Join the Revolution!**
+
+This is an open-source mission to make lab work less tedious. We're actively looking for collaborators.
 
 Ready to put me to work? Choose an option below!
 """
     keyboard = [
         [InlineKeyboardButton("Learn More 🌐", url=LEARN_MORE_URL)],
         [InlineKeyboardButton("Developer 👨‍💻", callback_data="developer_info")],
-        [InlineKeyboardButton("Try It Now 🚀", callback_data="start_analysis")]
+        [InlineKeyboardButton("Try It Now 🚀", callback_data="start_analysis")] # "Try It Now"
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -68,11 +87,15 @@ Ready to put me to work? Choose an option below!
 
 
 async def start_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """STARTS the ConversationHandler."""
+    """
+    STARTS the ConversationHandler for analysis.
+    Triggered by /analyze or "Try It Now" button.
+    """
     context.user_data['image_batch'] = []
     
+    # --- NEW: Polished Analysis Start Text ---
     text = """
-Starting a new blood smear analysis...
+*Starting a new blood smear analysis...* 🩸
 
 For best results, **100x oil immersion** images are recommended.
 
@@ -82,7 +105,7 @@ Press **DONE** when you are finished.
     keyboard = [
         [InlineKeyboardButton("How to take a good photo 📸", callback_data="show_tutorial")],
         [InlineKeyboardButton("DONE (0 images)", callback_data="analysis_done")],
-        [InlineKeyboardButton("Cancel Analysis", callback_data="analysis_cancel")]
+        [InlineKeyboardButton("Cancel Analysis ❌", callback_data="analysis_cancel")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -96,126 +119,66 @@ Press **DONE** when you are finished.
 
 async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows a helper message with tips."""
+    # --- NEW: Polished Tutorial Text ---
     text = """
 **Tips for a Great Analysis:**
-1.  **Use 100x Oil Immersion:** Our calculations assume this magnification.
+1.  **Use 100x Oil Immersion:** 🔬 Our calculations assume this magnification.
 2.  **Find the Monolayer:** Analyze the 'feathered edge' where cells are in a single, even layer.
-3.  **Focus is Key:** Ensure cells are sharp and clear. This is the #1 reason for rejection.
+3.  **Focus is Key:** 🎯 Ensure cells are sharp and clear. This is the #1 reason for rejection.
 4.  **Clean Lens:** A smudge can look like a platelet clump!
 """
     await update.callback_query.answer(text, show_alert=True)
     return UPLOADING_IMAGES
 
-# --- UPDATED Image Handler ---
-async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles when a user sends a photo for analysis."""
+async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles photos during the UPLOADING_IMAGES state.
+    Calls the /check_image API.
+    """
+    photo_file = await update.message.photo[-1].get_file()
     
-    await update.message.reply_text("Processing your image, please wait... ⏳")
-    
-    try:
-        photo_file = await update.message.photo[-1].get_file()
-    except Exception as e:
-        print(f"Error getting file: {e}")
-        await update.message.reply_text("Sorry, I had trouble downloading your image. Please try again.")
-        return
-
-    # 1. Download the photo as bytes
     file_bytes_io = io.BytesIO()
     await photo_file.download_to_memory(file_bytes_io)
     file_bytes_io.seek(0)
-    file_bytes = file_bytes_io.read() # Get raw bytes
     
-    # --- NEW: Image Resizing Step (from our previous conversation) ---
-    try:
-        nparr = np.frombuffer(file_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        if img is None:
-            await update.message.reply_text("Sorry, I couldn't read this image file. Is it corrupted?")
-            return
-
-        MAX_DIMENSION = 1280
-        height, width = img.shape[:2]
-        
-        if height > MAX_DIMENSION or width > MAX_DIMENSION:
-            await update.message.reply_text("Image is large, resizing for analysis...")
-            if height > width:
-                scale = MAX_DIMENSION / float(height)
-            else:
-                scale = MAX_DIMENSION / float(width)
-            new_dim = (int(width * scale), int(height * scale))
-            img = cv2.resize(img, new_dim, interpolation=cv2.INTER_AREA)
-
-        success, resized_image_buffer = cv2.imencode('.jpg', img)
-        if not success:
-            await update.message.reply_text("Sorry, I had an error processing the image.")
-            return
-        resized_image_bytes = resized_image_buffer.tobytes()
-        
-    except Exception as e:
-        print(f"Error resizing image: {e}")
-        await update.message.reply_text("Sorry, I had an error processing your image file.")
-        return
-    # --- End of Resizing Step ---
-
-    files_to_send = {'file': ('user_image.jpg', resized_image_bytes, 'image/jpeg')}
+    files_to_send = {'file': ('user_image.jpg', file_bytes_io, 'image/jpeg')}
     
     try:
-        response = requests.post(API_URL_CHECK, files=files_to_send, timeout=120) # 120 sec timeout
+        response = await client.post(API_URL_CHECK, files=files_to_send, timeout=20)
         
         if response.status_code == 200:
             data = response.json()
-            counts = data.get('counts', {})
-            
-            # --- NEW: Rich Report Formatting (Level 2) ---
-            
-            # Define reference ranges (you can adjust these)
-            ref_rbc = (300, 400)
-            ref_wbc = (4, 10)
-            ref_platelet = (20, 50)
-
-            # Get counts
-            rbc_count = counts.get('RBC', 0)
-            wbc_count = counts.get('WBC', 0)
-            platelet_count = counts.get('Platelet', 0)
-
-            # Build the report string using HTML tags
-            report = "🔬 <b>Analysis Report</b> 🔬\n\n"
-            report += "<b><u>Cellular Counts (per field)</u></b>\n" # Bold + Underline
-            report += f"  🩸 RBC: <code>{rbc_count}</code> <i>(Ref: {ref_rbc[0]}-{ref_rbc[1]})</i>\n"
-            report += f"  ⚪️ WBC: <code>{wbc_count}</code> <i>(Ref: {ref_wbc[0]}-{ref_wbc[1]})</i>\n"
-            report += f"  🔵 Platelets: <code>{platelet_count}</code> <i>(Ref: {ref_platelet[0]}-{ref_platelet[1]})</i>\n\n"
-
-            # Build flags
-            flags_list = []
-            if wbc_count > ref_wbc[1]:
-                flags_list.append(f"Potential Leukocytosis (High WBC: <code>{wbc_count}</code>)")
-            if wbc_count < ref_wbc[0]:
-                flags_list.append(f"Potential Leukopenia (Low WBC: <code>{wbc_count}</code>)")
-            if platelet_count < ref_platelet[0]:
-                flags_list.append(f"Potential Thrombocytopenia (Low Platelets: <code>{platelet_count}</code>)")
-
-            if flags_list:
-                report += "⚠️ <b>Potential Flags</b>\n"
-                for flag in flags_list:
-                    report += f"  - {flag}\n"
+            if data.get("status") == "OK":
+                context.user_data['image_batch'].append(photo_file.file_id)
+                num_images = len(context.user_data['image_batch'])
+                # --- NEW: Polished Success Message ---
+                text = f"✅ **Image {num_images} received.** For best results, we recommend 5-10 photos.\n\nPress **DONE** to analyze the `{num_images}` image(s) sent so far."
+                
             else:
-                report += "✅ <b>All counts within reference ranges.</b>\n"
-                
-            report += "\n" # Add a space
-            report += "<blockquote><i>Disclaimer: This is an automated analysis for a hackathon project, not a medical diagnosis. Please consult a qualified professional.</i></blockquote>"
-                
-            # Send the report using parse_mode="HTML"
-            await update.message.reply_text(report, parse_mode="HTML")
-            
+                reason = data.get("reason", "Unknown error")
+                num_images = len(context.user_data['image_batch'])
+                # --- NEW: Polished Rejection Message (as you suggested) ---
+                text = f"❌ **Image rejected:** `{reason}`\n\n**Tip:** Please try a different photo. Press **DONE** to analyze the `{num_images}` image(s) you've sent, or **Cancel**."
+        
         else:
-            await update.message.reply_text(f"Sorry, the analysis server returned an error (Code: {response.status_code}). Please try again.")
+            text = f"❌ Image upload failed. Server error (Code: `{response.status_code}`)."
 
-    except requests.exceptions.Timeout:
-        await update.message.reply_text("The analysis is taking too long. The server may be waking up. Please try again.")
-    except requests.exceptions.RequestException as e:
-        print(f"Error connecting to API: {e}")
-        await update.message.reply_text("Error: Could not connect to the analysis server. Please tell the admin.")
+    except httpx.RequestError as e:
+        print(f"Error connecting to check_image API: {e}")
+        text = "❌ Error: Could not connect to the analysis server. Please tell the admin."
+    
+    # --- NEW: Updated Button Text ---
+    num_images = len(context.user_data['image_batch'])
+    keyboard = [
+        [InlineKeyboardButton(f"DONE ({num_images} images) ✅", callback_data="analysis_done")],
+        [InlineKeyboardButton("Cancel Analysis ❌", callback_data="analysis_cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    
+    return UPLOADING_IMAGES
+
 async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     User is finished. Call the /analyze_batch endpoint.
@@ -242,36 +205,39 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response.status_code == 200:
             data = response.json()
             
-            # --- NEW: Parse the individual reports ---
+            # --- Parse the Rich Info JSON ---
             individual_reports = data.get("individualImageReports", [])
             concentrations = data.get("aggregatedAnalysis", {}).get("finalConcentrations", {})
             flags = data.get("flags", [])
             num_images = data.get("imageCount", len(file_ids))
             
-            # --- NEW: Build the first part of the report (per-image) ---
+            # --- NEW: Heavily Formatted Report ---
             report = "🔬 *Per-Field Counts:*\n"
+            if not individual_reports:
+                report += "> _No individual counts available._\n"
             for img_report in individual_reports:
                 counts = img_report.get("counts", {})
-                report += f"  - Image {img_report.get('image_index')}: "
-                report += f"WBC: {counts.get('WBC', 0)}, "
-                report += f"RBC: {counts.get('RBC', 0)}, "
-                report += f"PLT: {counts.get('Platelet', 0)}\n"
+                report += f"> *Image {img_report.get('image_index')}:* "
+                report += f"WBC: `{counts.get('WBC', 0)}`, "
+                report += f"RBC: `{counts.get('RBC', 0)}`, "
+                report += f"PLT: `{counts.get('Platelet', 0)}`\n"
             
-            # --- Build the second part (aggregated) ---
-            report += f"\n🔬 *Aggregated Report ({num_images} fields)* 🔬\n\n"
+            report += "\n---\n" # Horizontal line
+            report += f"🧪 *Aggregated Report ({num_images} fields)* 🧪\n\n"
             report += "*Estimated Concentrations:*\n"
-            report += f"  - WBC: *{concentrations.get('WBC_x10e9_L', 'N/A')}* x 10⁹/L\n"
-            report += f"  - RBC: *{concentrations.get('RBC_x10e12_L', 'N/A')}* x 10¹²/L\n"
-            report += f"  - Platelets: *{concentrations.get('PLT_x10e9_L', 'N/A')}* x 10⁹/L\n\n"
+            report += f"  ⚪️ WBC: **{concentrations.get('WBC_x10e9_L', 'N/A')}** x 10⁹/L\n"
+            report += f"  🔴 RBC: **{concentrations.get('RBC_x10e12_L', 'N/A')}** x 10¹²/L\n"
+            report += f"  🩹 Platelets: **{concentrations.get('PLT_x10e9_L', 'N/A')}** x 10⁹/L\n\n"
             
             if flags:
                 report += "⚠️ *Potential Flags (based on averages):*\n"
                 for flag in flags:
-                    report += f"  - {flag}\n"
+                    report += f"> _{flag}_\n"
             else:
                 report += "✅ *No immediate issues flagged.*"
             
-            report += "\n\n*Disclaimer: This is an AI-powered estimate, not a diagnosis. Please correlate with clinical findings.*"
+            report += "\n---\n" # Horizontal line
+            report += "_Disclaimer: This is an AI-powered estimate, not a diagnosis. Please correlate with clinical findings._"
 
             await update.callback_query.edit_message_text(report, parse_mode="Markdown")
             
@@ -281,7 +247,7 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # --- Ask for LLM chat ---
             keyboard = [
                 [InlineKeyboardButton("🧠 Discuss with AI", callback_data="start_llm_chat")],
-                [InlineKeyboardButton("Start New Analysis", callback_data="start_analysis")]
+                [InlineKeyboardButton("Start New Analysis 🚀", callback_data="start_analysis_new")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.callback_query.message.reply_text(
@@ -290,7 +256,7 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
         else:
-            await update.callback_query.edit_message_text(f"Sorry, the analysis server returned an error (Code: {response.status_code}). Response: {response.text}")
+            await update.callback_query.edit_message_text(f"Sorry, the analysis server returned an error (Code: `{response.status_code}`). Response: `{response.text}`", parse_mode="Markdown")
 
     except httpx.ReadTimeout:
         await update.callback_query.edit_message_text("The analysis is taking too long (timeout). Please try again with fewer images.")
@@ -301,8 +267,6 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"An unexpected error in handle_done: {e}")
         await update.callback_query.edit_message_text("An unexpected error occurred. Please start over.")
     
-    # End the UPLOADING state, but don't clear user_data
-    # It will be cleared when a new analysis starts or LLM chat ends
     return ConversationHandler.END
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -319,28 +283,52 @@ async def start_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Placeholder for starting the LLM Q&A."""
     await update.callback_query.answer()
     
-    # Check if we have report data to discuss
     if 'llm_context' in context.user_data:
         # TODO: Implement Phase 3 (LLM Q&A)
         await update.callback_query.edit_message_text("This feature is coming in Phase 3! Press /start to run a new analysis.")
-        context.user_data.clear() # Clear context after discussion
+        context.user_data.clear()
         return ConversationHandler.END
     else:
         await update.callback_query.edit_message_text("There is no report to discuss. Please run a new /analyze session first.")
         return ConversationHandler.END
 
-# --- Other Bot Commands ---
+# --- Your NEW command handlers ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Use /start to see options or /analyze to begin a new session.")
-
-async def developer_info(update: Update, context:ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        f"MicroSmart is an open-source project. You can contribute on GitHub:\n{CONTRIBUTE_URL}"
+    """Handles the /help command."""
+    await update.message.reply_text(
+        "I am MicroSmart v1.0, an AI assistant.\n\n"
+        "I can analyze blood smear photos. Use the /analyze command or the 'Try It Now' "
+        "button to start a new session. For more info, use /start."
     )
 
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /feedback command."""
+    await update.message.reply_text(
+        "We'd love your feedback! To send it, please type:\n"
+        "`/feedback` *followed by your message*.\n\n"
+        "Example: `/feedback This bot is amazing!`",
+        parse_mode="Markdown"
+    )
+
+async def contribute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the /contribute command."""
+    await update.message.reply_text(
+        f"You can contribute to this project on GitHub:\n{CONTRIBUTE_URL}\n\n"
+        "We are also actively looking for data partners!"
+    )
+
+async def developer_info(update: Update, context:ContextTypes.DEFAULT_TYPE):
+    """Handles the 'Developer 👨‍💻' button click."""
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text(
+        f"MicroSmart is an open-source project. You can follow its development "
+        f"or contribute on GitHub:\n{CONTRIBUTE_URL}"
+    )
+
+# --- Error Handler ---
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"Update {update} caused error {context.error}")
+
 
 def main():
     """Starts the bot."""
@@ -348,14 +336,16 @@ def main():
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # --- ConversationHandler for the main analysis flow ---
     analysis_conv = ConversationHandler(
         entry_points=[
             CommandHandler("analyze", start_analysis),
-            CallbackQueryHandler(start_analysis, pattern="^start_analysis$")
+            CallbackQueryHandler(start_analysis, pattern="^start_analysis$"),
+            CallbackQueryHandler(start_analysis, pattern="^start_analysis_new$") 
         ],
         states={
             UPLOADING_IMAGES: [
-                MessageHandler(filters.PHOTO, handle_image),
+                MessageHandler(filters.PHOTO, handle_image_upload),
                 CallbackQueryHandler(show_tutorial, pattern="^show_tutorial$"),
                 CallbackQueryHandler(handle_done, pattern="^analysis_done$")
             ],
@@ -370,8 +360,13 @@ def main():
     
     app.add_handler(analysis_conv)
     
+    # --- Add all other handlers (NEW and OLD) ---
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("feedback", feedback_command))
+    app.add_handler(CommandHandler("contribute", contribute_command))
+    
+    # Button handlers that are NOT part of the conversation
     app.add_handler(CallbackQueryHandler(developer_info, pattern="^developer_info$"))
     app.add_handler(CallbackQueryHandler(start_llm_chat, pattern="^start_llm_chat$"))
     
