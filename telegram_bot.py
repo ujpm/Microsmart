@@ -1,6 +1,8 @@
 import requests
 import io
 import os
+import cv2
+import numpy as np
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup  # <-- NEW
 from telegram.ext import (
@@ -142,16 +144,64 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, I had trouble downloading your image. Please try again.")
         return
 
+    # 1. Download the photo as bytes
     file_bytes_io = io.BytesIO()
     await photo_file.download_to_memory(file_bytes_io)
     file_bytes_io.seek(0)
+    file_bytes = file_bytes_io.read() # Get raw bytes
     
-    files_to_send = {'file': ('user_image.jpg', file_bytes_io, 'image/jpeg')}
+    # --- NEW: Image Resizing Step ---
+    try:
+        # 2. Decode the image bytes using OpenCV
+        nparr = np.frombuffer(file_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if img is None:
+            await update.message.reply_text("Sorry, I couldn't read this image file. Is it corrupted?")
+            return
+
+        # 3. Resize the image if it's too big
+        MAX_DIMENSION = 1280
+        height, width = img.shape[:2]
+        
+        if height > MAX_DIMENSION or width > MAX_DIMENSION:
+            await update.message.reply_text("Image is large, resizing for analysis...")
+            
+            # Find the largest dimension and calculate scaling ratio
+            if height > width:
+                scale = MAX_DIMENSION / float(height)
+            else:
+                scale = MAX_DIMENSION / float(width)
+                
+            new_dim = (int(width * scale), int(height * scale))
+            
+            # Perform the resize
+            img = cv2.resize(img, new_dim, interpolation=cv2.INTER_AREA)
+
+        # 4. Re-encode the (potentially resized) image back to JPG bytes
+        success, resized_image_buffer = cv2.imencode('.jpg', img)
+        if not success:
+            await update.message.reply_text("Sorry, I had an error processing the image.")
+            return
+            
+        resized_image_bytes = resized_image_buffer.tobytes()
+        
+    except Exception as e:
+        print(f"Error resizing image: {e}")
+        await update.message.reply_text("Sorry, I had an error processing your image file.")
+        return
+    # --- End of New Step ---
+
+    # 5. Prepare the RESIZED file to send to the API
+    files_to_send = {'file': ('user_image.jpg', resized_image_bytes, 'image/jpeg')}
     
     try:
-        response = requests.post(API_URL, files=files_to_send, timeout=60)
+        # 6. Send the file to your API
+        #    The 120-second timeout is now more than enough!
+        response = requests.post(API_URL, files=files_to_send, timeout=120) 
         
         if response.status_code == 200:
+            # 7. Format the JSON data from the API into a nice report
             data = response.json()
             counts = data.get('counts', {})
             flags = data.get('flags', [])
@@ -161,7 +211,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += "*Cell Counts:*\n"
             report += f"  - Red Blood Cells: *{counts.get('RBC', 0)}*\n"
             report += f"  - White Blood Cells: *{counts.get('WBC', 0)}*\n"
-            report += f"  - Platelets: *{counts.get('Platelet', 0)}*\n\n" # Updated to new name
+            report += f"  - Platelets: *{counts.get('Platelet', 0)}*\n\n"
             
             if flags:
                 report += "⚠️ *Potential Flags:*\n"
