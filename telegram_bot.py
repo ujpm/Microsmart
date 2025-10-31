@@ -1,6 +1,9 @@
 import httpx
 import io
 import os
+import cv2
+import requests
+import numpy as np
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -103,49 +106,116 @@ async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer(text, show_alert=True)
     return UPLOADING_IMAGES
 
-async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles photos during the UPLOADING_IMAGES state."""
-    photo_file = await update.message.photo[-1].get_file()
+# --- UPDATED Image Handler ---
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles when a user sends a photo for analysis."""
     
+    await update.message.reply_text("Processing your image, please wait... ⏳")
+    
+    try:
+        photo_file = await update.message.photo[-1].get_file()
+    except Exception as e:
+        print(f"Error getting file: {e}")
+        await update.message.reply_text("Sorry, I had trouble downloading your image. Please try again.")
+        return
+
+    # 1. Download the photo as bytes
     file_bytes_io = io.BytesIO()
     await photo_file.download_to_memory(file_bytes_io)
     file_bytes_io.seek(0)
+    file_bytes = file_bytes_io.read() # Get raw bytes
     
-    files_to_send = {'file': ('user_image.jpg', file_bytes_io, 'image/jpeg')}
+    # --- NEW: Image Resizing Step (from our previous conversation) ---
+    try:
+        nparr = np.frombuffer(file_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if img is None:
+            await update.message.reply_text("Sorry, I couldn't read this image file. Is it corrupted?")
+            return
+
+        MAX_DIMENSION = 1280
+        height, width = img.shape[:2]
+        
+        if height > MAX_DIMENSION or width > MAX_DIMENSION:
+            await update.message.reply_text("Image is large, resizing for analysis...")
+            if height > width:
+                scale = MAX_DIMENSION / float(height)
+            else:
+                scale = MAX_DIMENSION / float(width)
+            new_dim = (int(width * scale), int(height * scale))
+            img = cv2.resize(img, new_dim, interpolation=cv2.INTER_AREA)
+
+        success, resized_image_buffer = cv2.imencode('.jpg', img)
+        if not success:
+            await update.message.reply_text("Sorry, I had an error processing the image.")
+            return
+        resized_image_bytes = resized_image_buffer.tobytes()
+        
+    except Exception as e:
+        print(f"Error resizing image: {e}")
+        await update.message.reply_text("Sorry, I had an error processing your image file.")
+        return
+    # --- End of Resizing Step ---
+
+    files_to_send = {'file': ('user_image.jpg', resized_image_bytes, 'image/jpeg')}
     
     try:
-        response = await client.post(API_URL_CHECK, files=files_to_send, timeout=20)
+        response = requests.post(API_URL_CHECK, files=files_to_send, timeout=120) # 120 sec timeout
         
         if response.status_code == 200:
             data = response.json()
-            if data.get("status") == "OK":
-                context.user_data['image_batch'].append(photo_file.file_id)
-                num_images = len(context.user_data['image_batch'])
-                text = f"✅ Image {num_images} received. For best results, we recommend 5-10 photos.\n\nPress **DONE** to analyze the **{num_images}** image(s) sent so far."
-                
+            counts = data.get('counts', {})
+            
+            # --- NEW: Rich Report Formatting (Level 2) ---
+            
+            # Define reference ranges (you can adjust these)
+            ref_rbc = (300, 400)
+            ref_wbc = (4, 10)
+            ref_platelet = (20, 50)
+
+            # Get counts
+            rbc_count = counts.get('RBC', 0)
+            wbc_count = counts.get('WBC', 0)
+            platelet_count = counts.get('Platelet', 0)
+
+            # Build the report string using HTML tags
+            report = "🔬 <b>Analysis Report</b> 🔬\n\n"
+            report += "<b><u>Cellular Counts (per field)</u></b>\n" # Bold + Underline
+            report += f"  🩸 RBC: <code>{rbc_count}</code> <i>(Ref: {ref_rbc[0]}-{ref_rbc[1]})</i>\n"
+            report += f"  ⚪️ WBC: <code>{wbc_count}</code> <i>(Ref: {ref_wbc[0]}-{ref_wbc[1]})</i>\n"
+            report += f"  🔵 Platelets: <code>{platelet_count}</code> <i>(Ref: {ref_platelet[0]}-{ref_platelet[1]})</i>\n\n"
+
+            # Build flags
+            flags_list = []
+            if wbc_count > ref_wbc[1]:
+                flags_list.append(f"Potential Leukocytosis (High WBC: <code>{wbc_count}</code>)")
+            if wbc_count < ref_wbc[0]:
+                flags_list.append(f"Potential Leukopenia (Low WBC: <code>{wbc_count}</code>)")
+            if platelet_count < ref_platelet[0]:
+                flags_list.append(f"Potential Thrombocytopenia (Low Platelets: <code>{platelet_count}</code>)")
+
+            if flags_list:
+                report += "⚠️ <b>Potential Flags</b>\n"
+                for flag in flags_list:
+                    report += f"  - {flag}\n"
             else:
-                reason = data.get("reason", "Unknown error")
-                num_images = len(context.user_data['image_batch'])
-                text = f"❌ Image rejected: **{reason}**\n\n**Tip:** Please try a different photo. Press **DONE** to analyze the **{num_images}** image(s) you've sent, or **Cancel**."
-        
+                report += "✅ <b>All counts within reference ranges.</b>\n"
+                
+            report += "\n" # Add a space
+            report += "<blockquote><i>Disclaimer: This is an automated analysis for a hackathon project, not a medical diagnosis. Please consult a qualified professional.</i></blockquote>"
+                
+            # Send the report using parse_mode="HTML"
+            await update.message.reply_text(report, parse_mode="HTML")
+            
         else:
-            text = f"❌ Image upload failed. Server error (Code: {response.status_code})."
+            await update.message.reply_text(f"Sorry, the analysis server returned an error (Code: {response.status_code}). Please try again.")
 
-    except httpx.RequestError as e:
-        print(f"Error connecting to check_image API: {e}")
-        text = "❌ Error: Could not connect to the analysis server. Please tell the admin."
-    
-    num_images = len(context.user_data['image_batch'])
-    keyboard = [
-        [InlineKeyboardButton(f"DONE ({num_images} images)", callback_data="analysis_done")],
-        [InlineKeyboardButton("Cancel Analysis", callback_data="analysis_cancel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    
-    return UPLOADING_IMAGES
-
+    except requests.exceptions.Timeout:
+        await update.message.reply_text("The analysis is taking too long. The server may be waking up. Please try again.")
+    except requests.exceptions.RequestException as e:
+        print(f"Error connecting to API: {e}")
+        await update.message.reply_text("Error: Could not connect to the analysis server. Please tell the admin.")
 async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     User is finished. Call the /analyze_batch endpoint.
@@ -285,7 +355,7 @@ def main():
         ],
         states={
             UPLOADING_IMAGES: [
-                MessageHandler(filters.PHOTO, handle_image_upload),
+                MessageHandler(filters.PHOTO, handle_image),
                 CallbackQueryHandler(show_tutorial, pattern="^show_tutorial$"),
                 CallbackQueryHandler(handle_done, pattern="^analysis_done$")
             ],
