@@ -299,7 +299,7 @@ def main():
     print("Bot is polling for messages...")
     
     # --- NEW: Add a shutdown hook to close the httpx client ---
-    app.run_polling(close_session_on_stop=False)
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
