@@ -12,6 +12,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ConversationHandler
 )
+from telegram.constants import ParseMode # <-- NEW: Import ParseMode
 
 # Load variables from your .env file
 load_dotenv()
@@ -40,46 +41,47 @@ client = httpx.AsyncClient()
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles the /start command with the new welcome message and buttons.
-    This will also cancel any ongoing analysis.
     """
-    # --- NEW: Polished Welcome Text ---
+    # --- NEW: Formatted with <blockquote> and <b> ---
     welcome_text = """
-Hello! Welcome to **MicroSmart** 🔬
+Hello! Welcome to <b>MicroSmart</b> 🔬
 
-I'm your AI-powered microscopy sidekick, here to give you **lightning-fast preliminary analysis** of those *pesky* microscopic samples.
+I'm your AI-powered microscopy sidekick, here to give you <b>lightning-fast preliminary analysis</b> of those <i>pesky</i> microscopic samples.
 
-**🚧 Status: v1.0 "The Blood Analyst"**
+<blockquote>
+<b>🚧 Status: v1.0 "The Blood Analyst"</b>
 
 I've mastered blood smears (for now)! I can:
 * Count Red Blood Cells, White Blood Cells & Platelets.
 * Flag anything that looks suspicious (like high/low counts).
-* Give you an **estimated concentration** (e.g., `4.5 x 10⁹/L`) based on your images.
+* Give you an <b>estimated concentration</b> (e.g., <code>4.5 x 10⁹/L</code>) based on your images.
 
-**🔮 The Grand Vision**
+<b>🔮 The Grand Vision</b>
 
 My training never stops! Soon I'll be learning to tackle:
-* **Stool samples** (parasite egg hunt 🪱)
-* **Urine sediment** (the great crystal hunt 💎)
-* **Gram stains** (bacterial party identification 🦠)
+* <b>Stool samples</b> (parasite egg hunt 🪱)
+* <b>Urine sediment</b> (the great crystal hunt 💎)
+* <b>Gram stains</b> (bacterial party identification 🦠)
 
-**🤝 Join the Revolution!**
+<b>🤝 Join the Revolution!</b>
 
 This is an open-source mission to make lab work less tedious. We're actively looking for collaborators.
+</blockquote>
 
 Ready to put me to work? Choose an option below!
 """
     keyboard = [
         [InlineKeyboardButton("Learn More 🌐", url=LEARN_MORE_URL)],
         [InlineKeyboardButton("Developer 👨‍💻", callback_data="developer_info")],
-        [InlineKeyboardButton("Try It Now 🚀", callback_data="start_analysis")] # "Try It Now"
+        [InlineKeyboardButton("Try It Now 🚀", callback_data="start_analysis")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if update.message:
-        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     elif update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
     if 'image_batch' in context.user_data:
         context.user_data.clear()
@@ -89,18 +91,17 @@ Ready to put me to work? Choose an option below!
 async def start_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     STARTS the ConversationHandler for analysis.
-    Triggered by /analyze or "Try It Now" button.
     """
     context.user_data['image_batch'] = []
     
-    # --- NEW: Polished Analysis Start Text ---
+    # --- NEW: Formatted with <i> and <b> ---
     text = """
-*Starting a new blood smear analysis...* 🩸
+<i>Starting a new blood smear analysis...</i> 🩸
 
-For best results, **100x oil immersion** images are recommended.
+For best results, <b>100x oil immersion</b> images are recommended.
 
-Please upload **5-10 clear photos** from different fields.
-Press **DONE** when you are finished.
+Please upload <b>5-10 clear photos</b> from different fields.
+Press <b>DONE</b> when you are finished.
 """
     keyboard = [
         [InlineKeyboardButton("How to take a good photo 📸", callback_data="show_tutorial")],
@@ -111,21 +112,21 @@ Press **DONE** when you are finished.
 
     if update.callback_query:
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
     return UPLOADING_IMAGES
 
 async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows a helper message with tips."""
-    # --- NEW: Polished Tutorial Text ---
+    # --- NEW: Formatted with <b> ---
     text = """
-**Tips for a Great Analysis:**
-1.  **Use 100x Oil Immersion:** 🔬 Our calculations assume this magnification.
-2.  **Find the Monolayer:** Analyze the 'feathered edge' where cells are in a single, even layer.
-3.  **Focus is Key:** 🎯 Ensure cells are sharp and clear. This is the #1 reason for rejection.
-4.  **Clean Lens:** A smudge can look like a platelet clump!
+<b>Tips for a Great Analysis:</b>
+1.  <b>Use 100x Oil Immersion:</b> 🔬 Our calculations assume this magnification.
+2.  <b>Find the Monolayer:</b> Analyze the 'feathered edge' where cells are in a single, even layer.
+3.  <b>Focus is Key:</b> 🎯 Ensure cells are sharp and clear. This is the #1 reason for rejection.
+4.  <b>Clean Lens:</b> A smudge can look like a platelet clump!
 """
     await update.callback_query.answer(text, show_alert=True)
     return UPLOADING_IMAGES
@@ -151,23 +152,22 @@ async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             if data.get("status") == "OK":
                 context.user_data['image_batch'].append(photo_file.file_id)
                 num_images = len(context.user_data['image_batch'])
-                # --- NEW: Polished Success Message ---
-                text = f"✅ **Image {num_images} received.** For best results, we recommend 5-10 photos.\n\nPress **DONE** to analyze the `{num_images}` image(s) sent so far."
+                # --- NEW: Formatted with <b> and <code> ---
+                text = f"✅ <b>Image {num_images} received.</b> For best results, we recommend 5-10 photos.\n\nPress <b>DONE</b> to analyze the <code>{num_images}</code> image(s) sent so far."
                 
             else:
                 reason = data.get("reason", "Unknown error")
                 num_images = len(context.user_data['image_batch'])
-                # --- NEW: Polished Rejection Message (as you suggested) ---
-                text = f"❌ **Image rejected:** `{reason}`\n\n**Tip:** Please try a different photo. Press **DONE** to analyze the `{num_images}` image(s) you've sent, or **Cancel**."
+                # --- NEW: Formatted with <b> and <code> ---
+                text = f"❌ <b>Image rejected:</b> <code>{reason}</code>\n\n<b>Tip:</b> Please try a different photo. Press <b>DONE</b> to analyze the <code>{num_images}</code> image(s) you've sent, or <b>Cancel</b>."
         
         else:
-            text = f"❌ Image upload failed. Server error (Code: `{response.status_code}`)."
+            text = f"❌ Image upload failed. Server error (Code: <code>{response.status_code}</code>)."
 
     except httpx.RequestError as e:
         print(f"Error connecting to check_image API: {e}")
         text = "❌ Error: Could not connect to the analysis server. Please tell the admin."
     
-    # --- NEW: Updated Button Text ---
     num_images = len(context.user_data['image_batch'])
     keyboard = [
         [InlineKeyboardButton(f"DONE ({num_images} images) ✅", callback_data="analysis_done")],
@@ -175,7 +175,7 @@ async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     
     return UPLOADING_IMAGES
 
@@ -192,7 +192,8 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return UPLOADING_IMAGES
 
     await update.callback_query.edit_message_text(
-        f"Analyzing your **{len(file_ids)}** image(s), please wait... 🔬⏳"
+        f"Analyzing your <b>{len(file_ids)}</b> image(s), please wait... 🔬⏳",
+        parse_mode=ParseMode.HTML
     )
     
     try:
@@ -205,46 +206,48 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response.status_code == 200:
             data = response.json()
             
-            # --- Parse the Rich Info JSON ---
             individual_reports = data.get("individualImageReports", [])
             concentrations = data.get("aggregatedAnalysis", {}).get("finalConcentrations", {})
             flags = data.get("flags", [])
             num_images = data.get("imageCount", len(file_ids))
             
-            # --- NEW: Heavily Formatted Report ---
-            report = "🔬 *Per-Field Counts:*\n"
+            # --- NEW: Heavily Formatted HTML Report ---
+            report = "<i>🔬 Per-Field Counts:</i>\n"
             if not individual_reports:
-                report += "> _No individual counts available._\n"
-            for img_report in individual_reports:
-                counts = img_report.get("counts", {})
-                report += f"> *Image {img_report.get('image_index')}:* "
-                report += f"WBC: `{counts.get('WBC', 0)}`, "
-                report += f"RBC: `{counts.get('RBC', 0)}`, "
-                report += f"PLT: `{counts.get('Platelet', 0)}`\n"
+                report += "<blockquote><i>No individual counts available.</i></blockquote>\n"
+            else:
+                report += "<blockquote>" # Start blockquote for all images
+                for img_report in individual_reports:
+                    counts = img_report.get("counts", {})
+                    report += f"<i>Image {img_report.get('image_index')}:</i> "
+                    report += f"WBC: <code>{counts.get('WBC', 0)}</code>, "
+                    report += f"RBC: <code>{counts.get('RBC', 0)}</code>, "
+                    report += f"PLT: <code>{counts.get('Platelet', 0)}</code>\n"
+                report += "</blockquote>" # End blockquote
             
-            report += "\n---\n" # Horizontal line
-            report += f"🧪 *Aggregated Report ({num_images} fields)* 🧪\n\n"
-            report += "*Estimated Concentrations:*\n"
-            report += f"  ⚪️ WBC: **{concentrations.get('WBC_x10e9_L', 'N/A')}** x 10⁹/L\n"
-            report += f"  🔴 RBC: **{concentrations.get('RBC_x10e12_L', 'N/A')}** x 10¹²/L\n"
-            report += f"  🩹 Platelets: **{concentrations.get('PLT_x10e9_L', 'N/A')}** x 10⁹/L\n\n"
+            report += "\n<pre>--------------------</pre>\n" # Horizontal line
+            report += f"🧪 <b>Aggregated Report ({num_images} fields)</b> 🧪\n\n"
+            report += "<b>Estimated Concentrations:</b>\n"
+            report += f"  ⚪️ WBC: <b>{concentrations.get('WBC_x10e9_L', 'N/A')}</b> x 10⁹/L\n"
+            report += f"  🔴 RBC: <b>{concentrations.get('RBC_x10e12_L', 'N/A')}</b> x 10¹²/L\n"
+            report += f"  🩹 Platelets: <b>{concentrations.get('PLT_x10e9_L', 'N/A')}</b> x 10⁹/L\n\n"
             
             if flags:
-                report += "⚠️ *Potential Flags (based on averages):*\n"
+                report += "⚠️ <b>Potential Flags (based on averages):</b>\n<blockquote>"
                 for flag in flags:
-                    report += f"> _{flag}_\n"
+                    report += f"<i>{flag}</i>\n"
+                report += "</blockquote>"
             else:
-                report += "✅ *No immediate issues flagged.*"
+                report += "✅ <i>No immediate issues flagged.</i>"
             
-            report += "\n---\n" # Horizontal line
-            report += "_Disclaimer: This is an AI-powered estimate, not a diagnosis. Please correlate with clinical findings._"
+            report += "\n<pre>--------------------</pre>\n" # Horizontal line
+            # Your blockquote for the disclaimer
+            report += "<blockquote><i>Disclaimer: This is an AI-powered estimate, not a diagnosis. Please correlate with clinical findings.</i></blockquote>"
 
-            await update.callback_query.edit_message_text(report, parse_mode="Markdown")
+            await update.callback_query.edit_message_text(report, parse_mode=ParseMode.HTML)
             
-            # Store the rich JSON for the LLM
             context.user_data['llm_context'] = data
 
-            # --- Ask for LLM chat ---
             keyboard = [
                 [InlineKeyboardButton("🧠 Discuss with AI", callback_data="start_llm_chat")],
                 [InlineKeyboardButton("Start New Analysis 🚀", callback_data="start_analysis_new")]
@@ -256,7 +259,7 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
         else:
-            await update.callback_query.edit_message_text(f"Sorry, the analysis server returned an error (Code: `{response.status_code}`). Response: `{response.text}`", parse_mode="Markdown")
+            await update.callback_query.edit_message_text(f"Sorry, the analysis server returned an error (Code: <code>{response.status_code}</code>). Response: <code>{response.text}</code>", parse_mode=ParseMode.HTML)
 
     except httpx.ReadTimeout:
         await update.callback_query.edit_message_text("The analysis is taking too long (timeout). Please try again with fewer images.")
@@ -305,9 +308,9 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /feedback command."""
     await update.message.reply_text(
         "We'd love your feedback! To send it, please type:\n"
-        "`/feedback` *followed by your message*.\n\n"
-        "Example: `/feedback This bot is amazing!`",
-        parse_mode="Markdown"
+        "<code>/feedback</code> <i>followed by your message</i>.\n\n"
+        "Example: <code>/feedback This bot is amazing!</code>",
+        parse_mode=ParseMode.HTML
     )
 
 async def contribute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,10 +323,22 @@ async def contribute_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def developer_info(update: Update, context:ContextTypes.DEFAULT_TYPE):
     """Handles the 'Developer 👨‍💻' button click."""
     await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        f"MicroSmart is an open-source project. You can follow its development "
-        f"or contribute on GitHub:\n{CONTRIBUTE_URL}"
-    )
+    
+    # --- YOUR NEW POLISHED TEXT ---
+    text = f"""
+Hello from Rwanda! 🇷🇼 I'm JP, the developer.
+
+By day, I'm a Biomedical Science student. By night, I'm a coder trying to convince my computer to understand hematology. MicroSmart is the result!
+
+Want to help make this even smarter (or just see how the magic works)? It's all open-source. You can find the code and my other projects on GitHub!
+"""
+    keyboard = [
+        [InlineKeyboardButton("View on GitHub 🌐", url=CONTRIBUTE_URL)]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+
 
 # --- Error Handler ---
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
