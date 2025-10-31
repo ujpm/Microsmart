@@ -1,4 +1,4 @@
-import httpx  # <-- NEW: Replaced 'requests'
+import httpx
 import io
 import os
 from dotenv import load_dotenv
@@ -34,7 +34,6 @@ if not API_URL_CHECK:
 if not API_URL_BATCH:
     raise ValueError("API_URL_BATCH not found! Check your .env file.")
 
-# --- NEW: Asynchronous HTTP client for the bot ---
 client = httpx.AsyncClient()
 
 
@@ -105,10 +104,7 @@ async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return UPLOADING_IMAGES
 
 async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Handles photos during the UPLOADING_IMAGES state.
-    Calls the /check_image API.
-    """
+    """Handles photos during the UPLOADING_IMAGES state."""
     photo_file = await update.message.photo[-1].get_file()
     
     file_bytes_io = io.BytesIO()
@@ -118,7 +114,6 @@ async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     files_to_send = {'file': ('user_image.jpg', file_bytes_io, 'image/jpeg')}
     
     try:
-        # !! FIX: Use 'await client.post' instead of 'requests.post' !!
         response = await client.post(API_URL_CHECK, files=files_to_send, timeout=20)
         
         if response.status_code == 200:
@@ -168,23 +163,32 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     try:
-        # !! FIX: Use 'await client.post' and send JSON !!
         response = await client.post(
             API_URL_BATCH, 
             json={"file_ids": file_ids}, 
-            timeout=60.0  # Allow longer timeout for batch analysis
+            timeout=60.0
         )
         
         if response.status_code == 200:
             data = response.json()
             
-            # --- Parse the new "Rich Info JSON" ---
+            # --- NEW: Parse the individual reports ---
+            individual_reports = data.get("individualImageReports", [])
             concentrations = data.get("aggregatedAnalysis", {}).get("finalConcentrations", {})
             flags = data.get("flags", [])
             num_images = data.get("imageCount", len(file_ids))
             
-            # --- Build the new report with concentrations ---
-            report = f"🔬 *Aggregated Report ({num_images} fields)* 🔬\n\n"
+            # --- NEW: Build the first part of the report (per-image) ---
+            report = "🔬 *Per-Field Counts:*\n"
+            for img_report in individual_reports:
+                counts = img_report.get("counts", {})
+                report += f"  - Image {img_report.get('image_index')}: "
+                report += f"WBC: {counts.get('WBC', 0)}, "
+                report += f"RBC: {counts.get('RBC', 0)}, "
+                report += f"PLT: {counts.get('Platelet', 0)}\n"
+            
+            # --- Build the second part (aggregated) ---
+            report += f"\n🔬 *Aggregated Report ({num_images} fields)* 🔬\n\n"
             report += "*Estimated Concentrations:*\n"
             report += f"  - WBC: *{concentrations.get('WBC_x10e9_L', 'N/A')}* x 10⁹/L\n"
             report += f"  - RBC: *{concentrations.get('RBC_x10e12_L', 'N/A')}* x 10¹²/L\n"
@@ -200,6 +204,9 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             report += "\n\n*Disclaimer: This is an AI-powered estimate, not a diagnosis. Please correlate with clinical findings.*"
 
             await update.callback_query.edit_message_text(report, parse_mode="Markdown")
+            
+            # Store the rich JSON for the LLM
+            context.user_data['llm_context'] = data
 
             # --- Ask for LLM chat ---
             keyboard = [
@@ -213,7 +220,6 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
         else:
-            # Provide more debug info to the user
             await update.callback_query.edit_message_text(f"Sorry, the analysis server returned an error (Code: {response.status_code}). Response: {response.text}")
 
     except httpx.ReadTimeout:
@@ -225,7 +231,8 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"An unexpected error in handle_done: {e}")
         await update.callback_query.edit_message_text("An unexpected error occurred. Please start over.")
     
-    context.user_data.clear()
+    # End the UPLOADING state, but don't clear user_data
+    # It will be cleared when a new analysis starts or LLM chat ends
     return ConversationHandler.END
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -241,8 +248,16 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Placeholder for starting the LLM Q&A."""
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("This feature is coming soon! Press /start to run a new analysis.")
-    return ConversationHandler.END 
+    
+    # Check if we have report data to discuss
+    if 'llm_context' in context.user_data:
+        # TODO: Implement Phase 3 (LLM Q&A)
+        await update.callback_query.edit_message_text("This feature is coming in Phase 3! Press /start to run a new analysis.")
+        context.user_data.clear() # Clear context after discussion
+        return ConversationHandler.END
+    else:
+        await update.callback_query.edit_message_text("There is no report to discuss. Please run a new /analyze session first.")
+        return ConversationHandler.END
 
 # --- Other Bot Commands ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -257,14 +272,12 @@ async def developer_info(update: Update, context:ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"Update {update} caused error {context.error}")
 
-
 def main():
     """Starts the bot."""
     print("Bot is starting...")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # --- ConversationHandler for the main analysis flow ---
     analysis_conv = ConversationHandler(
         entry_points=[
             CommandHandler("analyze", start_analysis),
@@ -276,19 +289,17 @@ def main():
                 CallbackQueryHandler(show_tutorial, pattern="^show_tutorial$"),
                 CallbackQueryHandler(handle_done, pattern="^analysis_done$")
             ],
-            # Q_AND_A state will be added in Phase 3
+            # Q_AND_A: [ ... will be added in Phase 3 ... ]
         },
         fallbacks=[
             CallbackQueryHandler(handle_cancel, pattern="^analysis_cancel$"),
             CommandHandler("start", start_command)
         ],
-        # Allow the bot to be used by multiple users at once
-        conversation_timeout=600 # 10 minutes
+        conversation_timeout=600 
     )
     
     app.add_handler(analysis_conv)
     
-    # --- Other handlers ---
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(developer_info, pattern="^developer_info$"))
@@ -297,8 +308,6 @@ def main():
     app.add_error_handler(error_handler)
     
     print("Bot is polling for messages...")
-    
-    # --- NEW: Add a shutdown hook to close the httpx client ---
     app.run_polling()
 
 if __name__ == "__main__":
