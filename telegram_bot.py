@@ -1,4 +1,4 @@
-import requests
+import httpx  # <-- NEW: Replaced 'requests'
 import io
 import os
 from dotenv import load_dotenv
@@ -17,7 +17,7 @@ from telegram.ext import (
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_URL_CHECK = os.getenv("API_URL_CHECK") 
-API_URL_BATCH = os.getenv("API_URL_BATCH") # <-- NEW: Using batch URL
+API_URL_BATCH = os.getenv("API_URL_BATCH")
 
 # --- URL & Text Configuration ---
 LEARN_MORE_URL = "https://portifolio-cgu.pages.dev/"
@@ -33,6 +33,10 @@ if not API_URL_CHECK:
     raise ValueError("API_URL_CHECK not found! Check your .env file.")
 if not API_URL_BATCH:
     raise ValueError("API_URL_BATCH not found! Check your .env file.")
+
+# --- NEW: Asynchronous HTTP client for the bot ---
+client = httpx.AsyncClient()
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
@@ -50,24 +54,19 @@ Ready to put me to work? Choose an option below!
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Handle both /start command and button-press start
     if update.message:
         await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
     elif update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
 
-    # If we were in a conversation, end it.
     if 'image_batch' in context.user_data:
         context.user_data.clear()
     return ConversationHandler.END
 
 
 async def start_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    STARTS the ConversationHandler.
-    Asks the user to start uploading images.
-    """
+    """STARTS the ConversationHandler."""
     context.user_data['image_batch'] = []
     
     text = """
@@ -107,8 +106,8 @@ async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Handles all photos sent *during* the UPLOADING_IMAGES state.
-    Will call the /check_image API.
+    Handles photos during the UPLOADING_IMAGES state.
+    Calls the /check_image API.
     """
     photo_file = await update.message.photo[-1].get_file()
     
@@ -119,7 +118,8 @@ async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     files_to_send = {'file': ('user_image.jpg', file_bytes_io, 'image/jpeg')}
     
     try:
-        response = requests.post(API_URL_CHECK, files=files_to_send, timeout=20)
+        # !! FIX: Use 'await client.post' instead of 'requests.post' !!
+        response = await client.post(API_URL_CHECK, files=files_to_send, timeout=20)
         
         if response.status_code == 200:
             data = response.json()
@@ -131,17 +131,15 @@ async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             else:
                 reason = data.get("reason", "Unknown error")
                 num_images = len(context.user_data['image_batch'])
-                # Your idea: add buttons to rejected message
                 text = f"❌ Image rejected: **{reason}**\n\n**Tip:** Please try a different photo. Press **DONE** to analyze the **{num_images}** image(s) you've sent, or **Cancel**."
         
         else:
             text = f"❌ Image upload failed. Server error (Code: {response.status_code})."
 
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         print(f"Error connecting to check_image API: {e}")
         text = "❌ Error: Could not connect to the analysis server. Please tell the admin."
     
-    # --- Update the buttons (for both success and failure) ---
     num_images = len(context.user_data['image_batch'])
     keyboard = [
         [InlineKeyboardButton(f"DONE ({num_images} images)", callback_data="analysis_done")],
@@ -169,20 +167,19 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Analyzing your **{len(file_ids)}** image(s), please wait... 🔬⏳"
     )
     
-    # --- NEW: Call the /analyze_batch endpoint ---
     try:
-        # Send the list of file_ids as JSON
-        response = requests.post(
+        # !! FIX: Use 'await client.post' and send JSON !!
+        response = await client.post(
             API_URL_BATCH, 
             json={"file_ids": file_ids}, 
-            timeout=60
+            timeout=60.0  # Allow longer timeout for batch analysis
         )
         
         if response.status_code == 200:
             data = response.json()
             
             # --- Parse the new "Rich Info JSON" ---
-            concentrations = data.get("finalConcentrations", {})
+            concentrations = data.get("aggregatedAnalysis", {}).get("finalConcentrations", {})
             flags = data.get("flags", [])
             num_images = data.get("imageCount", len(file_ids))
             
@@ -216,15 +213,18 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
         else:
+            # Provide more debug info to the user
             await update.callback_query.edit_message_text(f"Sorry, the analysis server returned an error (Code: {response.status_code}). Response: {response.text}")
 
-    except requests.exceptions.Timeout:
-        await update.callback_query.edit_message_text("The analysis is taking too long. Please try again.")
+    except httpx.ReadTimeout:
+        await update.callback_query.edit_message_text("The analysis is taking too long (timeout). Please try again with fewer images.")
+    except httpx.RequestError as e:
+        print(f"Error connecting to batch_analyze API: {e}")
+        await update.callback_query.edit_message_text("Error: Could not connect to the analysis server for the final report.")
     except Exception as e:
-        print(f"Error in handle_done: {e}")
+        print(f"An unexpected error in handle_done: {e}")
         await update.callback_query.edit_message_text("An unexpected error occurred. Please start over.")
     
-    # Clean up and end the conversation
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -281,7 +281,9 @@ def main():
         fallbacks=[
             CallbackQueryHandler(handle_cancel, pattern="^analysis_cancel$"),
             CommandHandler("start", start_command)
-        ]
+        ],
+        # Allow the bot to be used by multiple users at once
+        conversation_timeout=600 # 10 minutes
     )
     
     app.add_handler(analysis_conv)
@@ -295,7 +297,9 @@ def main():
     app.add_error_handler(error_handler)
     
     print("Bot is polling for messages...")
-    app.run_polling()
+    
+    # --- NEW: Add a shutdown hook to close the httpx client ---
+    app.run_polling(close_session_on_stop=False)
 
 if __name__ == "__main__":
     main()
