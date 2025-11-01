@@ -14,14 +14,14 @@ from telegram.ext import (
     ConversationHandler
 )
 from telegram.constants import ParseMode
-import google.generativeai as genai # <-- NEW: Import Gemini
+import google.generativeai as genai
 
 # Load variables from your .env file
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_URL_CHECK = os.getenv("API_URL_CHECK") 
 API_URL_BATCH = os.getenv("API_URL_BATCH")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # <-- NEW: Load Gemini Key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- URL & Text Configuration ---
 LEARN_MORE_URL = "https://portifolio-cgu.pages.dev/"
@@ -40,7 +40,7 @@ if not API_URL_BATCH:
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY not found! Check your .env file.")
 
-# --- NEW: Configure Gemini ---
+# --- Configure Gemini ---
 try:
     genai.configure(api_key=GEMINI_API_KEY)
     llm_model = genai.GenerativeModel('gemini-1.5-flash')
@@ -253,9 +253,7 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.callback_query.edit_message_text(report, parse_mode=ParseMode.HTML)
             
-            # --- NEW: Save the *full JSON* for the LLM ---
             context.user_data['llm_context'] = data
-            # --- NEW: Also save the *plain text report* for the LLM's initial context ---
             context.user_data['llm_report_text'] = report 
 
             keyboard = [
@@ -308,30 +306,43 @@ async def start_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("There is no report to discuss. Please run a new /analyze session first.")
         return ConversationHandler.END
 
-    # --- NEW: Initialize the chat history for the LLM ---
-    # We send the system prompt and the report to the model first.
     system_prompt = f"""
-You are MicroSmart, a helpful AI assistant for medical lab students and technicians.
+You are MicroSmart, a helpful AI assistant for medical lab students and technicians in Rwanda.
 You are discussing a blood smear analysis report that your 'eyes' (a YOLOv8 model) just generated.
 NEVER give a diagnosis.
 NEVER give medical advice.
 ALWAYS be helpful, educational, and safe.
 When asked about flags (like 'Leukopenia'), explain what the term means clinically (e.g., 'a low number of white blood cells') and what it *might* suggest (e.g., 'it can be caused by...'), but DO NOT diagnose the patient.
-Use HTML formatting (<b>, <i>, <code>) in your responses.
+Use simple HTML formatting (<b>, <i>, <code>) in your responses.
 
 The report you are discussing is here:
 {json.dumps(context.user_data['llm_context'], indent=2)}
 """
     
-    # Start a new chat history
-    context.user_data['llm_chat'] = llm_model.start_chat(history=[
-        {'role': 'user', 'parts': [system_prompt]},
-        {'role': 'model', 'parts': ["Understood. I am ready to help the user understand this report. I will not provide a diagnosis."]}
-    ])
+    try:
+        context.user_data['llm_chat'] = llm_model.start_chat(history=[
+            {'role': 'user', 'parts': [system_prompt]},
+            {'role': 'model', 'parts': ["Understood. I am ready to help the user understand this report. I will not provide a diagnosis."]}
+        ])
+    except Exception as e:
+        print(f"Error starting Gemini chat: {e}")
+        await update.callback_query.edit_message_text("Sorry, I had trouble connecting to the AI 'Brain'. Please try again later.")
+        return ConversationHandler.END
     
-    await update.callback_query.edit_message_text("I have your report in front of me. What would you like to know?\n\n(Send /end to finish our chat.)", parse_mode=ParseMode.HTML)
+    # --- FIX: Added the keyboard here as you requested ---
+    keyboard = [
+        [InlineKeyboardButton("End Chat 💬", callback_data="end_llm_chat")],
+        [InlineKeyboardButton("Start New Analysis 🚀", callback_data="start_analysis_new")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    return Q_AND_A # Enter the Q&A state
+    await update.callback_query.edit_message_text(
+        "I have your report in front of me. What would you like to know?\n\n(Send /end to finish our chat, or use the button.)", 
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.HTML
+    )
+    
+    return Q_AND_A
 
 async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -343,10 +354,18 @@ async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="TYPING")
+    
+    print(f"[LLM] User question: {update.message.text}") # For debugging
 
     try:
         chat = context.user_data['llm_chat']
-        response = await chat.send_message_async(update.message.text)
+        
+        # --- FIX: Run the blocking 'send_message' in a thread ---
+        # This stops it from freezing the bot.
+        response = await context.application.create_task(
+            chat.send_message,
+            update.message.text
+        )
         
         await update.message.reply_text(response.text, parse_mode=ParseMode.HTML)
         
@@ -358,11 +377,15 @@ async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def end_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Handles the /end command to exit the Q&A session.
+    Handles the /end command or "End Chat" button to exit the Q&A session.
     """
-    await update.message.reply_text("Happy to help! Our chat is finished.\n\nSend /analyze to start a new analysis.")
+    # Check if it's a button press or a command
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text("Happy to help! Our chat is finished.\n\nSend /analyze to start a new analysis.")
+    else:
+        await update.message.reply_text("Happy to help! Our chat is finished.\n\nSend /analyze to start a new analysis.")
     
-    # Clean up the chat history
     context.user_data.pop('llm_context', None)
     context.user_data.pop('llm_report_text', None)
     context.user_data.pop('llm_chat', None)
@@ -398,7 +421,6 @@ async def developer_info(update: Update, context:ContextTypes.DEFAULT_TYPE):
     """Handles the 'Developer 👨‍💻' button click."""
     await update.callback_query.answer()
     
-    # --- YOUR NEW POLISHED TEXT ---
     text = f"""
 Hello from Rwanda! 🇷🇼 I'm JP, the developer.
 
@@ -412,7 +434,7 @@ Want to help make this even smarter (or just see how the magic works)? It's all 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
-    return ConversationHandler.END # Not part of a conversation
+    return ConversationHandler.END
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -423,10 +445,11 @@ def main():
     """Starts the bot."""
     print("Bot is starting...")
     
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    # --- FIX: Add httpx_client to the Application builder ---
+    # This allows `create_task` to work properly
+    app = Application.builder().token(TELEGRAM_TOKEN).httpx_client(client).build()
 
     # --- ConversationHandler for the main analysis flow ---
-    # This handler now has an "entry point" to the *next* conversation (Q&A)
     analysis_conv = ConversationHandler(
         entry_points=[
             CommandHandler("analyze", start_analysis),
@@ -439,33 +462,29 @@ def main():
                 CallbackQueryHandler(show_tutorial, pattern="^show_tutorial$"),
                 CallbackQueryHandler(handle_done, pattern="^analysis_done$")
             ],
-            # We add the Q_AND_A state, which is *entered* from a button
-            # handled by a *different* handler. This is advanced, but clean.
             Q_AND_A: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_llm_chat),
-                CommandHandler("end", end_llm_chat)
+                CommandHandler("end", end_llm_chat),
+                # --- FIX: Added the callback for the "End Chat" button ---
+                CallbackQueryHandler(end_llm_chat, pattern="^end_llm_chat$")
             ]
         },
         fallbacks=[
             CallbackQueryHandler(handle_cancel, pattern="^analysis_cancel$"),
             CommandHandler("start", start_command),
-            CommandHandler("end", end_llm_chat) # Can end from anywhere
+            CommandHandler("end", end_llm_chat)
         ],
         conversation_timeout=600 
     )
     
     app.add_handler(analysis_conv)
     
-    # --- Add all other handlers (NEW and OLD) ---
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("contribute", contribute_command))
     
-    # Button handlers that are NOT part of the main conversation
     app.add_handler(CallbackQueryHandler(developer_info, pattern="^developer_info$"))
-    
-    # --- NEW: This button is now an ENTRY POINT to the Q_A state ---
     app.add_handler(CallbackQueryHandler(start_llm_chat, pattern="^start_llm_chat$"))
     
     app.add_error_handler(error_handler)
