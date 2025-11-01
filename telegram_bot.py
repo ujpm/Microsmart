@@ -16,6 +16,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 import google.generativeai as genai
 import google.api_core.exceptions
+import asyncio
 
 # Load variables from your .env file
 load_dotenv()
@@ -44,7 +45,7 @@ if not GEMINI_API_KEY:
 # --- Configure Gemini ---
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    # --- FIX: Use the model name you confirmed works ---
+    # --- FIX #1: Use the model name you confirmed works ---
     llm_model = genai.GenerativeModel('models/gemini-flash-latest')
     print("Gemini model configured successfully.")
 except Exception as e:
@@ -66,6 +67,7 @@ async def check_brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("🧠 Checking connection to Gemini API... please wait.")
     
     try:
+        # Use the native async method
         response = await llm_model.generate_content_async(
             "Hello. Are you working? Respond with only the word 'OK'."
         )
@@ -277,7 +279,7 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await update.callback_query.edit_message_text(report, parse_mode=ParseMode.HTML)
             
-            context.user_data['llm_context'] = data
+            context.user_data['llm_context'] = data 
 
             keyboard = [
                 [InlineKeyboardButton("🧠 Discuss with AI", callback_data="start_llm_chat")],
@@ -328,23 +330,16 @@ async def start_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.edit_message_text("There is no report to discuss. Please run a new /analyze session first.")
         return ConversationHandler.END
 
+    # We are still creating the history list, but we won't use it
+    # in handle_llm_chat. This is just to keep the state clean.
     system_prompt = f"""
-You are MicroSmart, a helpful AI assistant for medical lab students and technicians in Rwanda.
-You are discussing a blood smear analysis report that your 'eyes' (a YOLOv8 model) just generated.
-NEVER give a diagnosis.
-NEVER give medical advice.
-ALWAYS be helpful, educational, and safe.
-When asked about flags (like 'Leukopenia'), explain what the term means clinically (e.g., 'a low number of white blood cells') and what it *might* suggest (e.g., 'it can be caused by...'), but DO NOT diagnose the patient.
-Use simple HTML formatting (<b>, <i>, <code>) in your responses.
-
-The report you are discussing is here:
-{json.dumps(context.user_data['llm_context'], indent=2)}
+You are MicroSmart, a helpful AI assistant for medical lab students.
+The user is asking you questions. Respond as a helpful assistant.
 """
     
-    # --- FIX: Manually create the history list ---
     context.user_data['llm_history'] = [
         {'role': 'user', 'parts': [system_prompt]},
-        {'role': 'model', 'parts': ["Understood. I am ready to help the user understand this report. I will not provide a diagnosis."]}
+        {'role': 'model', 'parts': ["Understood. I am ready to help the user."]}
     ]
     
     keyboard = [
@@ -354,7 +349,7 @@ The report you are discussing is here:
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.callback_query.edit_message_text(
-        "I have your report in front of me. What would you like to know?\n\n(Send /end to finish our chat, or use the button.)", 
+        "I'm ready. What would you like to know?\n\n(Send /end to finish our chat, or use the button.)", 
         reply_markup=reply_markup,
         parse_mode=ParseMode.HTML
     )
@@ -365,33 +360,26 @@ async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles all text messages *during* the Q_AND_A state.
     """
-    if 'llm_history' not in context.user_data:
+    if 'llm_history' not in context.user_data: # We check for history just to make sure we're in a valid session
         await update.message.reply_text("My apologies, I've lost our chat context. Please start a new analysis with /analyze.")
         return ConversationHandler.END
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="TYPING")
     
-    print(f"[LLM] User question: {update.message.text}")
+    print(f"[LLM] User question (diagnostic mode): {update.message.text}")
 
     try:
-        # --- FIX: Manually manage the history ---
+        # --- THIS IS THE DIAGNOSTIC TEST ---
+        # We are *ignoring* the history list and sending the user's
+        # message as a simple STRING, just like /check_brain.
         
-        # 1. Add the user's new message to the history
-        context.user_data['llm_history'].append(
-            {'role': 'user', 'parts': [update.message.text]}
-        )
-        
-        # 2. Call the working 'generate_content_async' with the full history
         response = await llm_model.generate_content_async(
-            context.user_data['llm_history']
+            update.message.text  # <-- We are sending the raw text only
         )
         
-        # 3. Add the AI's response to the history
-        context.user_data['llm_history'].append(
-            {'role': 'model', 'parts': [response.text]}
-        )
+        # We are NOT saving the history. This is a "dumb" bot for testing.
         
-        # 4. Send the response to the user
+        # Send the response to the user
         await update.message.reply_text(response.text, parse_mode=ParseMode.HTML)
         
     except google.api_core.exceptions.PermissionDenied as e:
@@ -399,7 +387,7 @@ async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ <b>Chat Error (Permission Denied).</b>\n\nIt looks like the API key is invalid or doesn't have the right permissions. Please tell the admin.", parse_mode=ParseMode.HTML)
     except google.api_core.exceptions.ResourceExhausted as e:
         print(f"LLM Chat ERROR (ResourceExhausted): {e}")
-        await update.message.reply_text("❌ <b>Chat Error (Resource Exhausted).</b>\n\nWe are being rate-limited or the free quota has been hit. Please tell the admin.", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("❌ <b>Chat Error (ResourceExhausted).</b>\n\nWe are being rate-limited or the free quota has been hit. Please tell the admin.", parse_mode=ParseMode.HTML)
     except Exception as e:
         print(f"Error communicating with Gemini: {e}")
         await update.message.reply_text("Sorry, I had trouble thinking of a response. Please try asking again.")
@@ -416,7 +404,6 @@ async def end_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Happy to help! Our chat is finished.\n\nSend /analyze to start a new analysis.")
     
-    # --- FIX: Clear the correct context variable ---
     context.user_data.pop('llm_context', None)
     context.user_data.pop('llm_history', None) 
     
