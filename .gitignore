@@ -8,3 +8,4 @@ __pycache__/
 # VSCode / Codespace files
 .vscode/
 .devcontainer/
+.venv/

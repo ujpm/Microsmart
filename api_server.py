@@ -11,7 +11,7 @@ from typing import List, Dict, Any
 from dotenv import load_dotenv
 
 # --- Configuration ---
-BLUR_THRESHOLD = 100.0
+BLUR_THRESHOLD = 25.0
 HARMONIZE_SIZE = (640, 640)
 WBC_CONVERSION_FACTOR = 2000 
 RBC_CONVERSION_FACTOR = 15000

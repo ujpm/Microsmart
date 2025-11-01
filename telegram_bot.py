@@ -1,6 +1,7 @@
 import httpx
 import io
 import os
+import json
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -12,13 +13,15 @@ from telegram.ext import (
     CallbackQueryHandler,
     ConversationHandler
 )
-from telegram.constants import ParseMode # <-- NEW: Import ParseMode
+from telegram.constants import ParseMode
+import google.generativeai as genai # <-- NEW: Import Gemini
 
 # Load variables from your .env file
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_URL_CHECK = os.getenv("API_URL_CHECK") 
 API_URL_BATCH = os.getenv("API_URL_BATCH")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # <-- NEW: Load Gemini Key
 
 # --- URL & Text Configuration ---
 LEARN_MORE_URL = "https://portifolio-cgu.pages.dev/"
@@ -34,6 +37,17 @@ if not API_URL_CHECK:
     raise ValueError("API_URL_CHECK not found! Check your .env file.")
 if not API_URL_BATCH:
     raise ValueError("API_URL_BATCH not found! Check your .env file.")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY not found! Check your .env file.")
+
+# --- NEW: Configure Gemini ---
+try:
+    genai.configure(api_key=GEMINI_API_KEY)
+    llm_model = genai.GenerativeModel('gemini-1.5-flash')
+    print("Gemini model configured successfully.")
+except Exception as e:
+    print(f"Error configuring Gemini: {e}")
+    llm_model = None
 
 client = httpx.AsyncClient()
 
@@ -42,7 +56,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles the /start command with the new welcome message and buttons.
     """
-    # --- NEW: Formatted with <blockquote> and <b> ---
     welcome_text = """
 Hello! Welcome to <b>MicroSmart</b> 🔬
 
@@ -94,7 +107,6 @@ async def start_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     context.user_data['image_batch'] = []
     
-    # --- NEW: Formatted with <i> and <b> ---
     text = """
 <i>Starting a new blood smear analysis...</i> 🩸
 
@@ -120,7 +132,6 @@ Press <b>DONE</b> when you are finished.
 
 async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Shows a helper message with tips."""
-    # --- NEW: Formatted with <b> ---
     text = """
 <b>Tips for a Great Analysis:</b>
 1.  <b>Use 100x Oil Immersion:</b> 🔬 Our calculations assume this magnification.
@@ -152,13 +163,11 @@ async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
             if data.get("status") == "OK":
                 context.user_data['image_batch'].append(photo_file.file_id)
                 num_images = len(context.user_data['image_batch'])
-                # --- NEW: Formatted with <b> and <code> ---
                 text = f"✅ <b>Image {num_images} received.</b> For best results, we recommend 5-10 photos.\n\nPress <b>DONE</b> to analyze the <code>{num_images}</code> image(s) sent so far."
                 
             else:
                 reason = data.get("reason", "Unknown error")
                 num_images = len(context.user_data['image_batch'])
-                # --- NEW: Formatted with <b> and <code> ---
                 text = f"❌ <b>Image rejected:</b> <code>{reason}</code>\n\n<b>Tip:</b> Please try a different photo. Press <b>DONE</b> to analyze the <code>{num_images}</code> image(s) you've sent, or <b>Cancel</b>."
         
         else:
@@ -211,21 +220,20 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             flags = data.get("flags", [])
             num_images = data.get("imageCount", len(file_ids))
             
-            # --- NEW: Heavily Formatted HTML Report ---
             report = "<i>🔬 Per-Field Counts:</i>\n"
             if not individual_reports:
                 report += "<blockquote><i>No individual counts available.</i></blockquote>\n"
             else:
-                report += "<blockquote>" # Start blockquote for all images
+                report += "<blockquote>"
                 for img_report in individual_reports:
                     counts = img_report.get("counts", {})
                     report += f"<i>Image {img_report.get('image_index')}:</i> "
                     report += f"WBC: <code>{counts.get('WBC', 0)}</code>, "
                     report += f"RBC: <code>{counts.get('RBC', 0)}</code>, "
                     report += f"PLT: <code>{counts.get('Platelet', 0)}</code>\n"
-                report += "</blockquote>" # End blockquote
+                report += "</blockquote>"
             
-            report += "\n<pre>--------------------</pre>\n" # Horizontal line
+            report += "\n<pre>--------------------</pre>\n"
             report += f"🧪 <b>Aggregated Report ({num_images} fields)</b> 🧪\n\n"
             report += "<b>Estimated Concentrations:</b>\n"
             report += f"  ⚪️ WBC: <b>{concentrations.get('WBC_x10e9_L', 'N/A')}</b> x 10⁹/L\n"
@@ -240,13 +248,15 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 report += "✅ <i>No immediate issues flagged.</i>"
             
-            report += "\n<pre>--------------------</pre>\n" # Horizontal line
-            # Your blockquote for the disclaimer
+            report += "\n<pre>--------------------</pre>\n"
             report += "<blockquote><i>Disclaimer: This is an AI-powered estimate, not a diagnosis. Please correlate with clinical findings.</i></blockquote>"
 
             await update.callback_query.edit_message_text(report, parse_mode=ParseMode.HTML)
             
+            # --- NEW: Save the *full JSON* for the LLM ---
             context.user_data['llm_context'] = data
+            # --- NEW: Also save the *plain text report* for the LLM's initial context ---
+            context.user_data['llm_report_text'] = report 
 
             keyboard = [
                 [InlineKeyboardButton("🧠 Discuss with AI", callback_data="start_llm_chat")],
@@ -281,21 +291,85 @@ async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# --- Placeholder LLM functions ---
+# --- NEW: Real LLM Chat Functions ---
+
 async def start_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Placeholder for starting the LLM Q&A."""
+    """
+    STARTS the Q&A Conversation.
+    This is triggered by the '🧠 Discuss with AI' button.
+    """
     await update.callback_query.answer()
     
-    if 'llm_context' in context.user_data:
-        # TODO: Implement Phase 3 (LLM Q&A)
-        await update.callback_query.edit_message_text("This feature is coming in Phase 3! Press /start to run a new analysis.")
-        context.user_data.clear()
+    if not llm_model:
+        await update.callback_query.edit_message_text("Sorry, the AI 'Brain' is not connected. Please contact the admin.")
         return ConversationHandler.END
-    else:
+
+    if 'llm_context' not in context.user_data:
         await update.callback_query.edit_message_text("There is no report to discuss. Please run a new /analyze session first.")
         return ConversationHandler.END
 
-# --- Your NEW command handlers ---
+    # --- NEW: Initialize the chat history for the LLM ---
+    # We send the system prompt and the report to the model first.
+    system_prompt = f"""
+You are MicroSmart, a helpful AI assistant for medical lab students and technicians.
+You are discussing a blood smear analysis report that your 'eyes' (a YOLOv8 model) just generated.
+NEVER give a diagnosis.
+NEVER give medical advice.
+ALWAYS be helpful, educational, and safe.
+When asked about flags (like 'Leukopenia'), explain what the term means clinically (e.g., 'a low number of white blood cells') and what it *might* suggest (e.g., 'it can be caused by...'), but DO NOT diagnose the patient.
+Use HTML formatting (<b>, <i>, <code>) in your responses.
+
+The report you are discussing is here:
+{json.dumps(context.user_data['llm_context'], indent=2)}
+"""
+    
+    # Start a new chat history
+    context.user_data['llm_chat'] = llm_model.start_chat(history=[
+        {'role': 'user', 'parts': [system_prompt]},
+        {'role': 'model', 'parts': ["Understood. I am ready to help the user understand this report. I will not provide a diagnosis."]}
+    ])
+    
+    await update.callback_query.edit_message_text("I have your report in front of me. What would you like to know?\n\n(Send /end to finish our chat.)", parse_mode=ParseMode.HTML)
+    
+    return Q_AND_A # Enter the Q&A state
+
+async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles all text messages *during* the Q_AND_A state.
+    Sends the user's question to Gemini and returns the answer.
+    """
+    if 'llm_chat' not in context.user_data:
+        await update.message.reply_text("My apologies, I've lost our chat context. Please start a new analysis with /analyze.")
+        return ConversationHandler.END
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="TYPING")
+
+    try:
+        chat = context.user_data['llm_chat']
+        response = await chat.send_message_async(update.message.text)
+        
+        await update.message.reply_text(response.text, parse_mode=ParseMode.HTML)
+        
+    except Exception as e:
+        print(f"Error communicating with Gemini: {e}")
+        await update.message.reply_text("Sorry, I had trouble thinking of a response. Please try asking again.")
+
+    return Q_AND_A # Stay in the Q&A state
+
+async def end_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles the /end command to exit the Q&A session.
+    """
+    await update.message.reply_text("Happy to help! Our chat is finished.\n\nSend /analyze to start a new analysis.")
+    
+    # Clean up the chat history
+    context.user_data.pop('llm_context', None)
+    context.user_data.pop('llm_report_text', None)
+    context.user_data.pop('llm_chat', None)
+    
+    return ConversationHandler.END
+
+# --- Other Bot Commands ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /help command."""
     await update.message.reply_text(
@@ -338,9 +412,9 @@ Want to help make this even smarter (or just see how the magic works)? It's all 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.callback_query.message.reply_text(text, reply_markup=reply_markup)
+    return ConversationHandler.END # Not part of a conversation
 
 
-# --- Error Handler ---
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"Update {update} caused error {context.error}")
 
@@ -352,6 +426,7 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # --- ConversationHandler for the main analysis flow ---
+    # This handler now has an "entry point" to the *next* conversation (Q&A)
     analysis_conv = ConversationHandler(
         entry_points=[
             CommandHandler("analyze", start_analysis),
@@ -364,11 +439,17 @@ def main():
                 CallbackQueryHandler(show_tutorial, pattern="^show_tutorial$"),
                 CallbackQueryHandler(handle_done, pattern="^analysis_done$")
             ],
-            # Q_AND_A: [ ... will be added in Phase 3 ... ]
+            # We add the Q_AND_A state, which is *entered* from a button
+            # handled by a *different* handler. This is advanced, but clean.
+            Q_AND_A: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_llm_chat),
+                CommandHandler("end", end_llm_chat)
+            ]
         },
         fallbacks=[
             CallbackQueryHandler(handle_cancel, pattern="^analysis_cancel$"),
-            CommandHandler("start", start_command)
+            CommandHandler("start", start_command),
+            CommandHandler("end", end_llm_chat) # Can end from anywhere
         ],
         conversation_timeout=600 
     )
@@ -381,8 +462,10 @@ def main():
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("contribute", contribute_command))
     
-    # Button handlers that are NOT part of the conversation
+    # Button handlers that are NOT part of the main conversation
     app.add_handler(CallbackQueryHandler(developer_info, pattern="^developer_info$"))
+    
+    # --- NEW: This button is now an ENTRY POINT to the Q_A state ---
     app.add_handler(CallbackQueryHandler(start_llm_chat, pattern="^start_llm_chat$"))
     
     app.add_error_handler(error_handler)
