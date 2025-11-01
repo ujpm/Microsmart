@@ -15,8 +15,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 import google.generativeai as genai
-import google.api_core.exceptions  # <-- NEW: To catch specific errors
-import asyncio # <-- NEW: To fix the deadlock
+import google.api_core.exceptions
 
 # Load variables from your .env file
 load_dotenv()
@@ -45,7 +44,7 @@ if not GEMINI_API_KEY:
 # --- Configure Gemini ---
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    llm_model = genai.GenerativeModel('gemini-1.5-flash')
+    llm_model = genai.GenerativeModel('models/gemini-flash-latest')
     print("Gemini model configured successfully.")
 except Exception as e:
     print(f"Error configuring Gemini: {e}")
@@ -54,7 +53,7 @@ except Exception as e:
 client = httpx.AsyncClient()
 
 
-# --- NEW: "Health Check" Command ---
+# --- "Health Check" Command ---
 async def check_brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     A standalone command to diagnose the Gemini API.
@@ -66,36 +65,29 @@ async def check_brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("🧠 Checking connection to Gemini API... please wait.")
     
     try:
-        # We will run the synchronous 'generate_content' in a thread
-        # This is the most robust test we can do.
-        response = await asyncio.to_thread(
-            llm_model.generate_content,
+        # --- FIX #1: Use the native async method ---
+        response = await llm_model.generate_content_async(
             "Hello. Are you working? Respond with only the word 'OK'."
         )
         
         if "OK" in response.text:
-            await update.message.reply_text("✅ **Brain check SUCCESS!** The Gemini API is responding.")
+            await update.message.reply_text("✅ <b>Brain check SUCCESS!</b> The Gemini API is responding.", parse_mode=ParseMode.HTML)
         else:
-            await update.message.reply_text(f"⚠️ Brain check inconclusive. API responded, but not as expected.\n\nGot: `{response.text}`")
+            await update.message.reply_text(f"⚠️ Brain check inconclusive. API responded, but not as expected.\n\nGot: <code>{response.text}</code>", parse_mode=ParseMode.HTML)
             
     except google.api_core.exceptions.PermissionDenied as e:
         print(f"Brain Check ERROR (PermissionDenied): {e}")
-        await update.message.reply_text("❌ **Brain check FAILED (Permission Denied).**\n\nIt looks like the API key is invalid or doesn't have the right permissions. Check your Google Cloud project.")
+        await update.message.reply_text("❌ <b>Brain check FAILED (Permission Denied).</b>\n\nIt looks like the API key is invalid or doesn't have the right permissions. Check your Google Cloud project.", parse_mode=ParseMode.HTML)
     except google.api_core.exceptions.ResourceExhausted as e:
         print(f"Brain Check ERROR (ResourceExhausted): {e}")
-        await update.message.reply_text("❌ **Brain check FAILED (Resource Exhausted).**\n\nWe are being rate-limited or the free quota has been hit. Check your Google API billing.")
+        await update.message.reply_text("❌ <b>Brain check FAILED (Resource Exhausted).</b>\n\nWe are being rate-limited or the free quota has been hit. Check your Google API billing.", parse_mode=ParseMode.HTML)
     except Exception as e:
         print(f"Brain Check ERROR (Unknown): {e}")
-        await update.message.reply_text(f"❌ **Brain check FAILED (Unknown Error).**\n\nAn unexpected error occurred. Check the server logs.\n`{e}`")
+        await update.message.reply_text(f"❌ <b>Brain check FAILED (Unknown Error).</b>\n\nAn unexpected error occurred. Check the server logs.\n<code>{e}</code>", parse_mode=ParseMode.HTML)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handles the /start command """
-    welcome_text = """
-Hello! Welcome to <b>MicroSmart</b> 🔬
-(Text and formatting...)
-"""
-    # ... (rest of start_command is unchanged) ...
     welcome_text = """
 Hello! Welcome to <b>MicroSmart</b> 🔬
 
@@ -181,7 +173,6 @@ async def show_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Handles photos during the UPLOADING_IMAGES state. """
-    # ... (code is unchanged) ...
     photo_file = await update.message.photo[-1].get_file()
     
     file_bytes_io = io.BytesIO()
@@ -225,7 +216,6 @@ async def handle_image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ User is finished. Call the /analyze_batch endpoint. """
-    # ... (code is unchanged) ...
     await update.callback_query.answer()
     
     file_ids = context.user_data.get('image_batch', [])
@@ -316,7 +306,6 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancels the current analysis session."""
-    # ... (code is unchanged) ...
     await update.callback_query.answer()
     context.user_data.clear()
     await update.callback_query.edit_message_text(
@@ -356,9 +345,9 @@ The report you are discussing is here:
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="TYPING")
     
     try:
-        # --- FIX: Run the *blocking* 'start_chat' in a thread ---
-        chat_session = await asyncio.to_thread(
-            llm_model.start_chat,
+        # --- FIX #2: Use the synchronous start_chat ---
+        # As you correctly noted, this is a fast, local operation.
+        chat_session = llm_model.start_chat(
             history=[
                 {'role': 'user', 'parts': [system_prompt]},
                 {'role': 'model', 'parts': ["Understood. I am ready to help the user understand this report. I will not provide a diagnosis."]}
@@ -400,22 +389,19 @@ async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = context.user_data['llm_chat']
         
-        # --- FIX: Run the *blocking* 'send_message' in a thread ---
-        # This is the most robust way. It cannot block the bot.
-        response = await asyncio.to_thread(
-            chat.send_message,
+        # --- FIX #3: Use the native non-blocking 'send_message_async' ---
+        response = await chat.send_message_async(
             update.message.text
         )
         
         await update.message.reply_text(response.text, parse_mode=ParseMode.HTML)
         
-    # --- NEW: Catch specific API errors ---
     except google.api_core.exceptions.PermissionDenied as e:
         print(f"LLM Chat ERROR (PermissionDenied): {e}")
-        await update.message.reply_text("❌ **Chat Error (Permission Denied).**\n\nIt looks like the API key is invalid or doesn't have the right permissions. Please tell the admin.")
+        await update.message.reply_text("❌ <b>Chat Error (Permission Denied).</b>\n\nIt looks like the API key is invalid or doesn't have the right permissions. Please tell the admin.", parse_mode=ParseMode.HTML)
     except google.api_core.exceptions.ResourceExhausted as e:
         print(f"LLM Chat ERROR (ResourceExhausted): {e}")
-        await update.message.reply_text("❌ **Chat Error (Resource Exhausted).**\n\nWe are being rate-limited or the free quota has been hit. Please tell the admin.")
+        await update.message.reply_text("❌ <b>Chat Error (Resource Exhausted).</b>\n\nWe are being rate-limited or the free quota has been hit. Please tell the admin.", parse_mode=ParseMode.HTML)
     except Exception as e:
         print(f"Error communicating with Gemini: {e}")
         await update.message.reply_text("Sorry, I had trouble thinking of a response. Please try asking again.")
@@ -426,7 +412,6 @@ async def end_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles the /end command or "End Chat" button to exit the Q&A session.
     """
-    # ... (code is unchanged) ...
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text("Happy to help! Our chat is finished.\n\nSend /analyze to start a new analysis.")
@@ -441,7 +426,6 @@ async def end_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Other Bot Commands ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (code is unchanged) ...
     await update.message.reply_text(
         "I am MicroSmart v1.0, an AI assistant.\n\n"
         "I can analyze blood smear photos. Use the /analyze command or the 'Try It Now' "
@@ -449,7 +433,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (code is unchanged) ...
     await update.message.reply_text(
         "We'd love your feedback! To send it, please type:\n"
         "<code>/feedback</code> <i>followed by your message</i>.\n\n"
@@ -458,14 +441,12 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def contribute_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ... (code is unchanged) ...
     await update.message.reply_text(
         f"You can contribute to this project on GitHub:\n{CONTRIBUTE_URL}\n\n"
         "We are also actively looking for data partners!"
     )
 
 async def developer_info(update: Update, context:ContextTypes.DEFAULT_TYPE):
-    # ... (code is unchanged) ...
     await update.callback_query.answer()
     
     text = f"""
@@ -492,7 +473,7 @@ def main():
     """Starts the bot."""
     print("Bot is starting...")
     
-    # --- Back to the simple builder ---
+    # --- FIX: Removed the broken .httpx_client() ---
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     analysis_conv = ConversationHandler(
@@ -523,12 +504,11 @@ def main():
     
     app.add_handler(analysis_conv)
     
-    # --- Add all other handlers ---
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("contribute", contribute_command))
-    app.add_handler(CommandHandler("check_brain", check_brain_command)) # <-- NEW: Add health check
+    app.add_handler(CommandHandler("check_brain", check_brain_command)) # <-- Add health check
     
     app.add_handler(CallbackQueryHandler(developer_info, pattern="^developer_info$"))
     app.add_handler(CallbackQueryHandler(start_llm_chat, pattern="^start_llm_chat$"))
