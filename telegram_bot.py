@@ -44,6 +44,7 @@ if not GEMINI_API_KEY:
 # --- Configure Gemini ---
 try:
     genai.configure(api_key=GEMINI_API_KEY)
+    # --- FIX: Use the model name you confirmed works ---
     llm_model = genai.GenerativeModel('models/gemini-flash-latest')
     print("Gemini model configured successfully.")
 except Exception as e:
@@ -53,7 +54,7 @@ except Exception as e:
 client = httpx.AsyncClient()
 
 
-# --- "Health Check" Command ---
+# --- "Health Check" Command (Unchanged, we know this works) ---
 async def check_brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     A standalone command to diagnose the Gemini API.
@@ -65,7 +66,6 @@ async def check_brain_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("🧠 Checking connection to Gemini API... please wait.")
     
     try:
-        # --- FIX #1: Use the native async method ---
         response = await llm_model.generate_content_async(
             "Hello. Are you working? Respond with only the word 'OK'."
         )
@@ -278,7 +278,6 @@ async def handle_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.edit_message_text(report, parse_mode=ParseMode.HTML)
             
             context.user_data['llm_context'] = data
-            context.user_data['llm_report_text'] = report 
 
             keyboard = [
                 [InlineKeyboardButton("🧠 Discuss with AI", callback_data="start_llm_chat")],
@@ -342,23 +341,11 @@ The report you are discussing is here:
 {json.dumps(context.user_data['llm_context'], indent=2)}
 """
     
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="TYPING")
-    
-    try:
-        # --- FIX #2: Use the synchronous start_chat ---
-        # As you correctly noted, this is a fast, local operation.
-        chat_session = llm_model.start_chat(
-            history=[
-                {'role': 'user', 'parts': [system_prompt]},
-                {'role': 'model', 'parts': ["Understood. I am ready to help the user understand this report. I will not provide a diagnosis."]}
-            ]
-        )
-        context.user_data['llm_chat'] = chat_session
-
-    except Exception as e:
-        print(f"Error starting Gemini chat: {e}")
-        await update.callback_query.edit_message_text("Sorry, I had trouble connecting to the AI 'Brain'. Please try again later. (Run /check_brain for details).")
-        return ConversationHandler.END
+    # --- FIX: Manually create the history list ---
+    context.user_data['llm_history'] = [
+        {'role': 'user', 'parts': [system_prompt]},
+        {'role': 'model', 'parts': ["Understood. I am ready to help the user understand this report. I will not provide a diagnosis."]}
+    ]
     
     keyboard = [
         [InlineKeyboardButton("End Chat 💬", callback_data="end_llm_chat")],
@@ -378,7 +365,7 @@ async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles all text messages *during* the Q_AND_A state.
     """
-    if 'llm_chat' not in context.user_data:
+    if 'llm_history' not in context.user_data:
         await update.message.reply_text("My apologies, I've lost our chat context. Please start a new analysis with /analyze.")
         return ConversationHandler.END
 
@@ -387,13 +374,24 @@ async def handle_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"[LLM] User question: {update.message.text}")
 
     try:
-        chat = context.user_data['llm_chat']
+        # --- FIX: Manually manage the history ---
         
-        # --- FIX #3: Use the native non-blocking 'send_message_async' ---
-        response = await chat.send_message_async(
-            update.message.text
+        # 1. Add the user's new message to the history
+        context.user_data['llm_history'].append(
+            {'role': 'user', 'parts': [update.message.text]}
         )
         
+        # 2. Call the working 'generate_content_async' with the full history
+        response = await llm_model.generate_content_async(
+            context.user_data['llm_history']
+        )
+        
+        # 3. Add the AI's response to the history
+        context.user_data['llm_history'].append(
+            {'role': 'model', 'parts': [response.text]}
+        )
+        
+        # 4. Send the response to the user
         await update.message.reply_text(response.text, parse_mode=ParseMode.HTML)
         
     except google.api_core.exceptions.PermissionDenied as e:
@@ -418,9 +416,9 @@ async def end_llm_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Happy to help! Our chat is finished.\n\nSend /analyze to start a new analysis.")
     
+    # --- FIX: Clear the correct context variable ---
     context.user_data.pop('llm_context', None)
-    context.user_data.pop('llm_report_text', None)
-    context.user_data.pop('llm_chat', None)
+    context.user_data.pop('llm_history', None) 
     
     return ConversationHandler.END
 
@@ -473,7 +471,6 @@ def main():
     """Starts the bot."""
     print("Bot is starting...")
     
-    # --- FIX: Removed the broken .httpx_client() ---
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     analysis_conv = ConversationHandler(
@@ -508,7 +505,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("feedback", feedback_command))
     app.add_handler(CommandHandler("contribute", contribute_command))
-    app.add_handler(CommandHandler("check_brain", check_brain_command)) # <-- Add health check
+    app.add_handler(CommandHandler("check_brain", check_brain_command))
     
     app.add_handler(CallbackQueryHandler(developer_info, pattern="^developer_info$"))
     app.add_handler(CallbackQueryHandler(start_llm_chat, pattern="^start_llm_chat$"))
